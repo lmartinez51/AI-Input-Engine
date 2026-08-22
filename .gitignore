@@ -1,0 +1,17 @@
+build/
+out/
+dist/
+scratch/
+.codegraph/
+*.user
+*.suo
+.vs/
+CMakeUserPresets.json
+__pycache__/
+*.pyc
+.DS_Store
+config.json
+logs/
+*.log
+test_out.txt
+test_err.txt

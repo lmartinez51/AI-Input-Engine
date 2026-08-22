@@ -1,0 +1,497 @@
+#include "Providers/OpenAIProvider.h"
+
+#include "Core/Json.h"
+#include "Core/Logging.h"
+#include "Core/Utf.h"
+#include "Translation/TranslationPrompt.h"
+
+#include <windows.h>
+#include <winhttp.h>
+
+#include <algorithm>
+#include <chrono>
+#include <format>
+#include <thread>
+#include <vector>
+
+namespace aiie {
+
+namespace {
+
+// Extracts the host portion ("host[:port]") from a full https URL.
+std::wstring HostFromUrl(const std::wstring& url) {
+    std::wstring host = url;
+    if (const size_t scheme = host.find(L"://"); scheme != std::wstring::npos) {
+        host = host.substr(scheme + 3);
+    }
+    if (const size_t slash = host.find(L'/'); slash != std::wstring::npos) {
+        host = host.substr(0, slash);
+    }
+    if (const size_t colon = host.find(L':'); colon != std::wstring::npos) {
+        host = host.substr(0, colon);
+    }
+    return host;
+}
+
+// Extracts the request-target path (starting with '/') from a full URL.
+std::wstring PathFromUrl(const std::wstring& url) {
+    std::wstring path = url;
+    if (const size_t scheme = path.find(L"://"); scheme != std::wstring::npos) {
+        path = path.substr(scheme + 3);
+    }
+    if (const size_t slash = path.find(L'/'); slash != std::wstring::npos) {
+        path = path.substr(slash);
+    } else {
+        path = L"/";
+    }
+    return path;
+}
+
+// Formats the HTTP status into a user-presentable error.
+std::wstring StatusErrorMessage(DWORD status) {
+    switch (status) {
+    case 400: return L"Bad request (400): the model or request parameters were rejected";
+    case 401:
+    case 403: return L"API authentication failed (401/403): check the OpenAI API key";
+    case 404: return L"Not found (404): check the endpoint URL and model name";
+    case 429: return L"Rate limited (429): too many requests or insufficient quota";
+    default:
+        if (status >= 500) return std::format(L"OpenAI server error ({})", status);
+        return std::format(L"Unexpected HTTP status {}", status);
+    }
+}
+
+std::wstring TrimWhitespaceAndQuotes(std::wstring text) {
+    // Strip leading newlines/carriage returns
+    while (!text.empty() && (text.front() == L'\r' || text.front() == L'\n')) {
+        text.erase(text.begin());
+    }
+    // Strip trailing newlines/carriage returns
+    while (!text.empty() && (text.back() == L'\r' || text.back() == L'\n')) {
+        text.pop_back();
+    }
+    // If wrapped in matching quotation marks, strip them:
+    if (text.size() >= 2) {
+        if ((text.front() == L'"' && text.back() == L'"') ||
+            (text.front() == L'\'' && text.back() == L'\'') ||
+            (text.front() == L'\x201C' && text.back() == L'\x201D')) {
+            text = text.substr(1, text.size() - 2);
+            while (!text.empty() && (text.front() == L'\r' || text.front() == L'\n')) {
+                text.erase(text.begin());
+            }
+            while (!text.empty() && (text.back() == L'\r' || text.back() == L'\n')) {
+                text.pop_back();
+            }
+        }
+    }
+    return text;
+}
+
+// Performs a raw HTTPS POST request via WinHTTP and returns the response body and status code.
+bool PerformHttpRequest(const std::wstring& endpoint, const std::wstring& authBearerKey,
+                        const std::string& utf8Body, int timeoutMs, DWORD& outStatusCode,
+                        std::wstring& outResponseBody, std::wstring& outError) {
+    outStatusCode = 0;
+    outResponseBody.clear();
+    outError.clear();
+
+    const std::wstring host = HostFromUrl(endpoint);
+    const std::wstring path = PathFromUrl(endpoint);
+
+    HINTERNET session = WinHttpOpen(L"AIInputEngine/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) {
+        outError = std::format(L"WinHttpOpen failed: {}", GetLastError());
+        return false;
+    }
+
+    WinHttpSetTimeouts(session, timeoutMs / 4, timeoutMs / 2, timeoutMs, timeoutMs);
+
+    HINTERNET connect = WinHttpConnect(session, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (!connect) {
+        outError = std::format(L"WinHttpConnect failed: {}", GetLastError());
+        WinHttpCloseHandle(session);
+        return false;
+    }
+
+    HINTERNET request = WinHttpOpenRequest(connect, L"POST", path.c_str(), nullptr,
+                                          WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                          WINHTTP_FLAG_SECURE);
+    if (!request) {
+        outError = std::format(L"WinHttpOpenRequest failed: {}", GetLastError());
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        return false;
+    }
+
+    // Headers
+    std::wstring headers = L"Content-Type: application/json; charset=utf-8\r\n";
+    if (!authBearerKey.empty()) {
+        headers += L"Authorization: Bearer " + authBearerKey + L"\r\n";
+    }
+
+    const BOOL sent = WinHttpSendRequest(request, headers.c_str(), static_cast<DWORD>(headers.size()),
+                                         const_cast<char*>(utf8Body.data()),
+                                         static_cast<DWORD>(utf8Body.size()),
+                                         static_cast<DWORD>(utf8Body.size()), 0);
+    if (!sent) {
+        outError = std::format(L"WinHttpSendRequest failed: {}", GetLastError());
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        return false;
+    }
+
+    if (!WinHttpReceiveResponse(request, nullptr)) {
+        outError = std::format(L"WinHttpReceiveResponse failed: {}", GetLastError());
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        return false;
+    }
+
+    DWORD statusCode = 0;
+    DWORD statusSize = sizeof(statusCode);
+    WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                        WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize,
+                        WINHTTP_NO_HEADER_INDEX);
+    outStatusCode = statusCode;
+
+    std::string responseBytes;
+    DWORD bytesAvailable = 0;
+    while (WinHttpQueryDataAvailable(request, &bytesAvailable) && bytesAvailable > 0) {
+        const size_t prev = responseBytes.size();
+        responseBytes.resize(prev + bytesAvailable);
+        DWORD bytesRead = 0;
+        if (!WinHttpReadData(request, responseBytes.data() + prev, bytesAvailable, &bytesRead)) {
+            break;
+        }
+        responseBytes.resize(prev + bytesRead);
+        if (bytesRead == 0) {
+            break;
+        }
+    }
+
+    WinHttpCloseHandle(request);
+    WinHttpCloseHandle(connect);
+    WinHttpCloseHandle(session);
+
+    outResponseBody = utf::FromUtf8(responseBytes);
+    return true;
+}
+
+} // namespace
+
+OpenAIProvider::OpenAIProvider(OpenAIConfig config) : config_(std::move(config)) {
+    worker_ = std::thread([this] { WorkerLoop(); });
+}
+
+OpenAIProvider::~OpenAIProvider() {
+    shutdown_.store(true);
+    cv_.notify_all();
+    if (worker_.joinable()) {
+        worker_.join();
+    }
+}
+
+ProviderStatus OpenAIProvider::Status() const {
+    std::lock_guard lock(statusMutex_);
+    return {state_.load(), statusMessage_};
+}
+
+void OpenAIProvider::CancelAll() {
+    std::lock_guard lock(mutex_);
+    for (auto& p : queue_) {
+        p.cancelled->store(true);
+    }
+    queue_.clear();
+}
+
+void OpenAIProvider::Translate(TranslationRequest request, TranslationCallback callback) {
+    Pending p;
+    p.request = std::move(request);
+    p.callback = std::move(callback);
+    p.cancelled = std::make_shared<std::atomic<bool>>(false);
+    {
+        std::lock_guard lock(mutex_);
+        queue_.push_back(std::move(p));
+    }
+    cv_.notify_all();
+}
+
+std::wstring OpenAIProvider::BuildRequestBody(const TranslationRequest& request,
+                                              std::wstring_view model) {
+    json::Value root = json::Value::MakeObject();
+    root.set(L"model", std::wstring(model));
+
+    const std::wstring instructions = BuildInstructionsForRequest(request);
+    root.set(L"instructions", instructions);
+    root.set(L"input", request.text);
+
+    return json::Serialize(root);
+}
+
+bool OpenAIProvider::ParseResponseBody(std::wstring_view body, std::wstring& outText,
+                                       std::wstring& error) {
+    outText.clear();
+    error.clear();
+
+    json::Value root;
+    try {
+        root = json::Parse(body);
+    } catch (const json::JsonError& e) {
+        error = std::format(L"Malformed response JSON: {}", utf::FromUtf8(e.what()));
+        return false;
+    }
+
+    // Check for API error payload:
+    if (const json::Value* errObj = root.find(L"error")) {
+        if (errObj->is_object()) {
+            error = errObj->get_string(L"message", L"OpenAI API returned an error");
+            return false;
+        }
+    }
+
+    // Strategy 1: Direct output_text convenience property (Responses API)
+    if (const json::Value* outTextVal = root.find(L"output_text")) {
+        if (outTextVal->is_string()) {
+            outText = TrimWhitespaceAndQuotes(outTextVal->as_string());
+            if (!outText.empty()) {
+                return true;
+            }
+        }
+    }
+
+    // Strategy 2: output[] array -> item.type == "message" -> content[] -> text
+    if (const json::Value* outputVal = root.find(L"output")) {
+        if (outputVal->is_array()) {
+            for (const auto& item : outputVal->as_array()) {
+                if (item.is_object()) {
+                    if (const json::Value* contentVal = item.find(L"content")) {
+                        if (contentVal->is_array()) {
+                            for (const auto& contentItem : contentVal->as_array()) {
+                                if (contentItem.is_object()) {
+                                    std::wstring txt = contentItem.get_string(L"text", L"");
+                                    if (!txt.empty()) {
+                                        outText = TrimWhitespaceAndQuotes(txt);
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    std::wstring txt = item.get_string(L"text", L"");
+                    if (!txt.empty()) {
+                        outText = TrimWhitespaceAndQuotes(txt);
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Strategy 3: Chat Completions fallback (choices[0].message.content)
+    if (const json::Value* choicesVal = root.find(L"choices")) {
+        if (choicesVal->is_array() && !choicesVal->as_array().empty()) {
+            const auto& firstChoice = choicesVal->as_array()[0];
+            if (firstChoice.is_object()) {
+                if (const json::Value* msgVal = firstChoice.find(L"message")) {
+                    if (msgVal->is_object()) {
+                        std::wstring txt = msgVal->get_string(L"content", L"");
+                        if (!txt.empty()) {
+                            outText = TrimWhitespaceAndQuotes(txt);
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    error = L"Response did not contain translated text";
+    return false;
+}
+
+bool OpenAIProvider::TestConnection(const std::wstring& endpoint, const std::wstring& model,
+                                    const std::wstring& apiKey, int timeoutMs,
+                                    std::wstring& outError) {
+    outError.clear();
+    if (apiKey.empty()) {
+        outError = L"API key is not configured";
+        return false;
+    }
+
+    TranslationRequest req;
+    req.text = L"Hola";
+    req.sourceLanguage = L"es";
+    req.targetLanguage = L"en";
+    req.mode = TransformMode::Translate;
+
+    const std::wstring jsonBody = BuildRequestBody(req, model);
+    const std::string utf8Body = utf::ToUtf8(jsonBody);
+
+    DWORD statusCode = 0;
+    std::wstring responseBody;
+    std::wstring httpError;
+    if (!PerformHttpRequest(endpoint, apiKey, utf8Body, timeoutMs, statusCode, responseBody, httpError)) {
+        outError = httpError;
+        return false;
+    }
+
+    if (statusCode != 200) {
+        std::wstring parsedText, parsedError;
+        if (ParseResponseBody(responseBody, parsedText, parsedError) && !parsedError.empty()) {
+            outError = parsedError;
+        } else {
+            outError = StatusErrorMessage(statusCode);
+        }
+        return false;
+    }
+
+    std::wstring translatedText, parseError;
+    if (!ParseResponseBody(responseBody, translatedText, parseError)) {
+        outError = parseError;
+        return false;
+    }
+
+    return true;
+}
+
+void OpenAIProvider::WorkerLoop() {
+    for (;;) {
+        Pending p;
+        {
+            std::unique_lock lock(mutex_);
+            cv_.wait(lock, [this] { return shutdown_.load() || !queue_.empty(); });
+            if (shutdown_.load()) {
+                return;
+            }
+            p = std::move(queue_.front());
+            queue_.pop_front();
+        }
+        if (p.cancelled->load()) {
+            TranslationResult res;
+            res.requestId = p.request.requestId;
+            res.ok = false;
+            res.error = L"Request cancelled";
+            p.callback(std::move(res));
+            continue;
+        }
+
+        {
+            std::lock_guard lock(statusMutex_);
+            state_.store(ProviderStatus::State::Busy);
+            statusMessage_ = L"Translating...";
+        }
+
+        TranslationResult res = ExecuteOne(p.request, p.cancelled);
+
+        {
+            std::lock_guard lock(statusMutex_);
+            if (res.ok) {
+                state_.store(ProviderStatus::State::Ready);
+                statusMessage_ = L"Ready";
+            } else {
+                state_.store(ProviderStatus::State::Error);
+                statusMessage_ = res.error;
+            }
+        }
+
+        p.callback(std::move(res));
+    }
+}
+
+TranslationResult OpenAIProvider::ExecuteOne(const TranslationRequest& req,
+                                             const std::shared_ptr<std::atomic<bool>>& cancelled) {
+    TranslationResult res;
+    res.requestId = req.requestId;
+
+    if (config_.apiKey.empty()) {
+        res.ok = false;
+        res.error = L"OpenAI API key is not configured. Open Settings to enter a key.";
+        return res;
+    }
+
+    const std::wstring jsonBody = BuildRequestBody(req, config_.model);
+    const std::string utf8Body = utf::ToUtf8(jsonBody);
+
+    int attempts = 0;
+    const int maxAttempts = std::max(1, config_.maxRetries + 1);
+
+    while (attempts < maxAttempts) {
+        if (cancelled && cancelled->load()) {
+            res.ok = false;
+            res.error = L"Request cancelled";
+            return res;
+        }
+
+        ++attempts;
+        DWORD statusCode = 0;
+        std::wstring responseBody;
+        std::wstring httpError;
+
+        const auto tStart = std::chrono::steady_clock::now();
+        const bool httpOk = PerformHttpRequest(config_.endpoint, config_.apiKey, utf8Body,
+                                               config_.timeoutMs, statusCode, responseBody, httpError);
+        const auto tEnd = std::chrono::steady_clock::now();
+        const auto latencyMs = std::chrono::duration_cast<std::chrono::milliseconds>(tEnd - tStart).count();
+
+        if (!httpOk) {
+            Logger::Instance().Warn(cat::Translation, L"OpenAI HTTP error (attempt {}/{}): {}",
+                                    attempts, maxAttempts, httpError);
+            if (attempts < maxAttempts) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(500 * attempts));
+                continue;
+            }
+            res.ok = false;
+            res.error = L"Network error communicating with OpenAI";
+            res.errorDetail = httpError;
+            return res;
+        }
+
+        if (statusCode == 200) {
+            std::wstring translated, parseError;
+            if (ParseResponseBody(responseBody, translated, parseError)) {
+                res.ok = true;
+                res.text = std::move(translated);
+                Logger::Instance().Info(cat::Translation, L"OpenAI translation completed in {} ms (len={})",
+                                        latencyMs, res.text.size());
+                return res;
+            }
+            res.ok = false;
+            res.error = L"Failed to parse OpenAI response";
+            res.errorDetail = parseError;
+            return res;
+        }
+
+        // Handle error status codes:
+        Logger::Instance().Warn(cat::Translation, L"OpenAI status {} in {} ms (attempt {}/{})",
+                                statusCode, latencyMs, attempts, maxAttempts);
+
+        // Parse detailed message if provided by API:
+        std::wstring parsedText, parsedError;
+        std::wstring apiMsg;
+        if (ParseResponseBody(responseBody, parsedText, parsedError) && !parsedError.empty()) {
+            apiMsg = parsedError;
+        } else {
+            apiMsg = StatusErrorMessage(statusCode);
+        }
+
+        // Retry on 429 (rate limit) or 5xx (server error)
+        if ((statusCode == 429 || statusCode >= 500) && attempts < maxAttempts) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000 * attempts));
+            continue;
+        }
+
+        res.ok = false;
+        res.error = apiMsg;
+        res.errorDetail = StatusErrorMessage(statusCode);
+        return res;
+    }
+
+    res.ok = false;
+    res.error = L"OpenAI request failed after retries";
+    return res;
+}
+
+} // namespace aiie
