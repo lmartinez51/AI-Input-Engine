@@ -160,7 +160,7 @@ std::wstring DefaultModelForProvider(ProviderId id) {
     case ProviderId::Mock:
         return L"";
     case ProviderId::Gemini:
-        return L"gemini-3.6-flash";
+        return L"gemini-3.7-flash";
     case ProviderId::OpenAI:
         return L"gpt-5.6-luna";
     }

@@ -15,14 +15,27 @@ InputEngine::InputEngine(std::shared_ptr<IDispatcher> dispatcher,
     : dispatcher_(std::move(dispatcher)), backend_(std::move(backend)),
       pipeline_(std::move(pipeline)), logger_(logger ? std::move(logger)
                                                      : std::shared_ptr<Logger>(&Logger::Instance(), [](Logger*) {})) {
-    debouncer_ = std::make_shared<Debouncer>([this] {
+    auto alive = alive_;
+    auto disp = dispatcher_;
+    debouncer_ = std::make_shared<Debouncer>([this, alive, disp] {
         // Debouncer thread -> input thread.
-        dispatcher_->Post([this] { OnDebounceFired(); });
+        if (!alive || !alive->load()) {
+            return;
+        }
+        disp->Post([this, alive] {
+            if (!alive || !alive->load()) {
+                return;
+            }
+            OnDebounceFired();
+        });
     });
     debouncer_->Start();
 }
 
 InputEngine::~InputEngine() {
+    if (alive_) {
+        alive_->store(false);
+    }
     debouncer_->Stop();
 }
 
@@ -137,6 +150,29 @@ void InputEngine::FlushBuffer() {
     HandleCommitKey();
 }
 
+void InputEngine::CancelActiveCompositionForFocusChange() {
+    std::lock_guard lock(mutex_);
+    if (!enabled_) {
+        return;
+    }
+    const bool wasInflight = (inflightRequestId_ != -1);
+    const size_t bufLen = buffer_.size();
+    if (bufLen > 0 || wasInflight) {
+        logger_->Info(cat::Composition,
+                      L"[COMPOSITION] focus changed: cancelling active composition (buffer_len={}, inflight_req={})",
+                      bufLen, inflightRequestId_);
+        if (bufLen > 0) {
+            lastCommitted_ = buffer_;
+            buffer_.clear();
+            backend_->OnBufferCommitted();
+        }
+        inflightRequestId_ = -1;
+        inflightSnapshot_.clear();
+        debouncer_->Disarm();
+        UpdateState(EngineState::Idle, L"");
+    }
+}
+
 void InputEngine::OnDebounceFired() {
     std::lock_guard lock(mutex_);
     if (!enabled_ || buffer_.empty()) {
@@ -156,7 +192,7 @@ bool InputEngine::SubmitRequest() {
     if (static_cast<int>(buffer_.size()) < config_.minChars) {
         return false;
     }
-    const int64_t id = inflightRequestId_ + 1;
+    const int64_t id = nextRequestId_++;
     inflightRequestId_ = id;
     inflightSnapshot_ = buffer_;
 
@@ -174,15 +210,22 @@ bool InputEngine::SubmitRequest() {
     req.mode = config_.mode;
     req.context = lastCommitted_;
     req.useCache = config_.cacheEnabled;
+    req.requestId = id;
 
     UpdateState(EngineState::Translating, L"");
 
     // The pipeline callback may fire on a provider thread; marshal to the
     // input thread. The request id is checked again inside OnTranslationResult.
-    pipeline_->Submit(std::move(req), [this, id](TranslationResult result) {
-        // Capture `this` is safe: the engine owns the pipeline and is torn
-        // down before the pipeline in the owning process.
-        dispatcher_->Post([this, id, result = std::move(result)]() mutable {
+    auto alive = alive_;
+    auto dispatcher = dispatcher_;
+    pipeline_->Submit(std::move(req), [this, alive, dispatcher, id](TranslationResult result) {
+        if (!alive || !alive->load()) {
+            return;
+        }
+        dispatcher->Post([this, alive, id, result = std::move(result)]() mutable {
+            if (!alive || !alive->load()) {
+                return;
+            }
             OnTranslationResult(id, std::move(result));
         });
     });
@@ -200,8 +243,15 @@ void InputEngine::OnTranslationResult(int64_t requestId, TranslationResult resul
                        inflightRequestId_);
         return;
     }
+    // Stale or cancelled results are normal lifecycle events (e.g. superseded by newer typing)
+    // and must NEVER mutate composition state, set Error, or show failure status.
+    if (result.error == L"stale" || result.error == L"cancelled") {
+        logger_->Debug(cat::Composition, L"result #{} ({}) safely discarded (inflight #{})",
+                       requestId, result.error, inflightRequestId_);
+        return;
+    }
     if (!result.ok) {
-        // Fallback: keep the typed text exactly as-is. Nothing is deleted.
+        // Fallback for genuine provider errors: keep the typed text exactly as-is. Nothing is deleted.
         inflightRequestId_ = -1;
         UpdateState(EngineState::Error, result.error);
         logger_->Warn(cat::Composition, L"translation failed for request #{}: {} — keeping user text",

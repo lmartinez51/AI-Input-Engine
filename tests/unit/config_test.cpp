@@ -272,8 +272,8 @@ TEST(config_profile_and_model_params_roundtrip) {
     AppConfig c;
     c.profile = TranslationProfile::Custom;
     c.customProfileInstructions = L"Translate into British English slang";
-    c.provider = ProviderId::OpenAI;
-    c.model = L"gpt-5.6-luna";
+    c.provider = ProviderId::Gemini;
+    c.model = L"gemini-3.7-flash";
     c.modelParams.temperature = 0.7;
     c.modelParams.topP = 0.9;
     c.modelParams.topK = 40;
@@ -294,6 +294,34 @@ TEST(config_profile_and_model_params_roundtrip) {
     CHECK_EQ(*l.modelParams.topK, 40);
     CHECK(l.modelParams.maxOutputTokens.has_value());
     CHECK_EQ(*l.modelParams.maxOutputTokens, 2048);
+
+    std::filesystem::remove(path);
+}
+
+TEST(config_openai_model_params_sanitization_on_load) {
+    const std::filesystem::path path =
+        std::filesystem::temp_directory_path() / L"aiie_test_openai_sanitize.json";
+
+    ConfigStore store(path);
+    AppConfig c;
+    c.provider = ProviderId::OpenAI;
+    c.model = L"gpt-4o";
+    c.modelParams.reasoningEffort = L"low"; // unsupported on gpt-4o -> sanitized
+    c.modelParams.topK = 40;               // unsupported on OpenAI -> sanitized
+    c.modelParams.temperature = 0.8;
+    c.modelParams.topP = 0.95;
+    store.Set(c);
+    CHECK(store.Save());
+
+    ConfigStore loaded(path);
+    CHECK(loaded.Load());
+    const AppConfig& l = loaded.Get();
+    CHECK(!l.modelParams.reasoningEffort.has_value());
+    CHECK(!l.modelParams.topK.has_value());
+    CHECK(l.modelParams.temperature.has_value());
+    CHECK_EQ(*l.modelParams.temperature, 0.8);
+    CHECK(l.modelParams.topP.has_value());
+    CHECK_EQ(*l.modelParams.topP, 0.95);
 
     std::filesystem::remove(path);
 }

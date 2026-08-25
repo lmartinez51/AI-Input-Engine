@@ -35,7 +35,7 @@ int64_t TranslationPipeline::Submit(TranslationRequest request, TranslationCallb
         return 0;
     }
 
-    const int64_t id = nextId_.fetch_add(1);
+    const int64_t id = (request.requestId > 0) ? request.requestId : nextId_.fetch_add(1);
     request.requestId = id;
 
     {

@@ -46,13 +46,13 @@ TEST(gemini_provider_clean_shutdown_no_key) {
 TEST(gemini_provider_cancel_and_destroy_while_queued) {
     GeminiConfig gc;
     auto provider = std::make_shared<GeminiProvider>(gc);
-    std::atomic<int> callbacks{0};
+    auto callbacks = std::make_shared<std::atomic<int>>(0);
     TranslationRequest req;
     req.text = L"hola";
     req.sourceLanguage = L"es";
     req.targetLanguage = L"en";
     for (int i = 0; i < 5; ++i) {
-        provider->Translate(req, [&](TranslationResult r) { callbacks.fetch_add(1); (void)r; });
+        provider->Translate(req, [callbacks](TranslationResult r) { callbacks->fetch_add(1); (void)r; });
     }
     provider->CancelAll();
     provider.reset(); // must not hang even with queued work
@@ -65,19 +65,19 @@ TEST(pipeline_teardown_with_inflight_request) {
     auto cache = std::make_shared<TranslationCache>(100);
     auto provider = std::make_shared<MockProvider>(std::chrono::milliseconds(200));
     auto pipeline = std::make_shared<TranslationPipeline>(provider, cache, 30000);
-    std::atomic<int> callbacks{0};
+    auto callbacks = std::make_shared<std::atomic<int>>(0);
     TranslationRequest req;
     req.text = L"hola";
     req.sourceLanguage = L"es";
     req.targetLanguage = L"en";
-    pipeline->Submit(req, [&](TranslationResult r) {
-        callbacks.fetch_add(1);
+    pipeline->Submit(req, [callbacks](TranslationResult r) {
+        callbacks->fetch_add(1);
         (void)r;
     });
     pipeline.reset();
     provider.reset();
-    WaitFor([&] { return callbacks.load() >= 1; });
-    CHECK_EQ(callbacks.load(), 1);
+    WaitFor([&] { return callbacks->load() >= 1; });
+    CHECK_EQ(callbacks->load(), 1);
 }
 
 TEST(engine_teardown_with_inflight_translation) {

@@ -74,6 +74,9 @@ private:
     void UnadviseKeySinks();
     std::wstring CharForVk(WPARAM wParam, LPARAM lParam) const;
     HRESULT SetCompositionText(TfEditCookie ec, const std::wstring& text);
+    HRESULT SetCompositionTextFull(TfEditCookie ec, const std::wstring& text);
+    HRESULT AppendCompositionText(TfEditCookie ec, const std::wstring& delta);
+    HRESULT TruncateCompositionText(TfEditCookie ec, size_t trimCount);
     HRESULT StartComposition(TfEditCookie ec, ITfRange* pRange, ITfCompositionSink* pSink,
                              ITfComposition** ppComposition);
     void TerminateComposition(ITfCompositionView* pView);

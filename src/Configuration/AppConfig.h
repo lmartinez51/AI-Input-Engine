@@ -66,6 +66,7 @@ struct ModelParameters {
     std::optional<double> topP;
     std::optional<int> topK;
     std::optional<int> maxOutputTokens;
+    std::optional<std::wstring> reasoningEffort; // e.g. "none", "low", "medium"
 };
 
 struct AppConfig {
@@ -96,10 +97,14 @@ struct AppConfig {
     int requestTimeoutMs = 60000;
     int maxRetries = 2;
 
+    // Smart Paste settings.
+    bool smartPasteEnabled = true;
+
     // Hotkeys.
     Hotkey hotkeyToggle{MOD_CONTROL | MOD_ALT, VK_SPACE};
     Hotkey hotkeySwap{MOD_CONTROL | MOD_ALT, L'S'};
     Hotkey hotkeyDiagnostics{MOD_CONTROL | MOD_ALT, L'D'};
+    Hotkey hotkeySmartPaste{MOD_CONTROL | MOD_SHIFT, 'V'};
 
     // Logging / privacy.
     LogLevel logLevel = LogLevel::Info;

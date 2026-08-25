@@ -95,11 +95,16 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* ptim, TfClientId tid, DWORD d
     enabled_ = config_.enabled;
     Logger::Instance().SetLevel(config_.logLevel);
     Logger::Instance().SetLogRawText(config_.logRawText);
-    {
+    wchar_t envDebug[8] = {};
+    if (GetEnvironmentVariableW(L"AIIE_TSF_DEBUG", envDebug, 8) > 0 && envDebug[0] == L'1') {
         wchar_t temp[MAX_PATH] = {};
         GetTempPathW(MAX_PATH, temp);
         Logger::Instance().SetLogFile(std::wstring(temp) + L"aiie_tip.log");
         Logger::Instance().SetLevel(LogLevel::Trace);
+    } else if (config_.logLevel >= LogLevel::Debug) {
+        wchar_t temp[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, temp);
+        Logger::Instance().SetLogFile(std::wstring(temp) + L"aiie_tip.log");
     }
 
     // Wiring: dispatcher + pipeline + engine (owned per activation).
@@ -645,7 +650,7 @@ void TextService::CommitComposition() {
     Logger::Instance().Trace(cat::TSF, L"composition committed");
 }
 
-HRESULT TextService::SetCompositionText(TfEditCookie ec, const std::wstring& text) {
+HRESULT TextService::SetCompositionTextFull(TfEditCookie ec, const std::wstring& text) {
     if (composition_ == nullptr || focusContext_ == nullptr) {
         return E_FAIL;
     }
@@ -685,8 +690,7 @@ HRESULT TextService::SetCompositionText(TfEditCookie ec, const std::wstring& tex
         pRange->Release();
         return hr;
     }
-    // Replace the whole composition range with the new text. The composition
-    // range covers exactly the composition text, so this is a full replace.
+    // Managed context: Replace the whole composition range with the new text.
     hr = pRange->SetText(ec, 0, text.data(), static_cast<LONG>(text.size()));
     Logger::Instance().Trace(cat::TSF, L"SetText on composition range: 0x{:08X} ({})", hr,
                              text.size());
@@ -695,6 +699,123 @@ HRESULT TextService::SetCompositionText(TfEditCookie ec, const std::wstring& tex
     }
     pRange->Release();
     return hr;
+}
+
+HRESULT TextService::AppendCompositionText(TfEditCookie ec, const std::wstring& delta) {
+    if (composition_ == nullptr || focusContext_ == nullptr || delta.empty()) {
+        return E_FAIL;
+    }
+    ITfRange* pRange = nullptr;
+    HRESULT hr = composition_->GetRange(&pRange);
+    if (FAILED(hr) || pRange == nullptr) {
+        return hr;
+    }
+    if (compServices_) {
+        // Owner-protocol context: collapse to END and insert delta
+        ITfRange* pInserted = nullptr;
+        hr = pRange->Collapse(ec, TF_ANCHOR_END);
+        if (SUCCEEDED(hr)) {
+            TF_SELECTION sel{};
+            sel.range = pRange;
+            sel.style.ase = TF_AE_END;
+            sel.style.fInterimChar = FALSE;
+            hr = focusContext_->SetSelection(ec, 1, &sel);
+        }
+        ITfInsertAtSelection* pInsert = nullptr;
+        if (SUCCEEDED(hr)) {
+            hr = focusContext_->QueryInterface(IID_ITfInsertAtSelection,
+                                               reinterpret_cast<void**>(&pInsert));
+        }
+        if (SUCCEEDED(hr) && pInsert) {
+            hr = pInsert->InsertTextAtSelection(ec, 0, delta.data(), static_cast<LONG>(delta.size()),
+                                                &pInserted);
+            pInsert->Release();
+        }
+        if (SUCCEEDED(hr) && pInserted) {
+            SetDisplayAttribute(ec, pInserted);
+            pInserted->Release();
+        }
+        pRange->Release();
+        return hr;
+    }
+
+    // Managed context: collapse to END, insert delta, and shift composition end
+    hr = pRange->Collapse(ec, TF_ANCHOR_END);
+    if (SUCCEEDED(hr)) {
+        hr = pRange->SetText(ec, 0, delta.data(), static_cast<LONG>(delta.size()));
+    }
+    if (SUCCEEDED(hr)) {
+        composition_->ShiftEnd(ec, pRange);
+        SetDisplayAttribute(ec, pRange);
+    }
+    pRange->Release();
+    return hr;
+}
+
+HRESULT TextService::TruncateCompositionText(TfEditCookie ec, size_t trimCount) {
+    if (composition_ == nullptr || focusContext_ == nullptr || trimCount == 0) {
+        return E_FAIL;
+    }
+    ITfRange* pRange = nullptr;
+    HRESULT hr = composition_->GetRange(&pRange);
+    if (FAILED(hr) || pRange == nullptr) {
+        return hr;
+    }
+    if (compServices_) {
+        // Owner-protocol context: fall back to full replacement of remaining text
+        pRange->Release();
+        return E_NOTIMPL;
+    }
+
+    // Managed context: collapse to END, shift start backwards by trimCount, and delete tail
+    hr = pRange->Collapse(ec, TF_ANCHOR_END);
+    if (SUCCEEDED(hr)) {
+        LONG shifted = 0;
+        hr = pRange->ShiftStart(ec, -static_cast<LONG>(trimCount), &shifted, nullptr);
+        if (SUCCEEDED(hr) && shifted != 0) {
+            hr = pRange->SetText(ec, 0, nullptr, 0);
+            if (SUCCEEDED(hr)) {
+                composition_->ShiftEnd(ec, pRange);
+            }
+        }
+    }
+    pRange->Release();
+    return hr;
+}
+
+HRESULT TextService::SetCompositionText(TfEditCookie ec, const std::wstring& text) {
+    if (composition_ == nullptr || focusContext_ == nullptr) {
+        return E_FAIL;
+    }
+    if (text == compositionText_) {
+        return S_OK;
+    }
+
+    const std::wstring& oldText = compositionText_;
+
+    // Case 1: Incremental Append (text strictly extends oldText)
+    if (!oldText.empty() && text.size() > oldText.size() &&
+        text.compare(0, oldText.size(), oldText) == 0) {
+        const std::wstring delta = text.substr(oldText.size());
+        const HRESULT hr = AppendCompositionText(ec, delta);
+        if (SUCCEEDED(hr)) {
+            return S_OK;
+        }
+        // Fall back to full replacement if incremental append fails
+    }
+    // Case 2: Incremental Truncation / Backspace (text is a strict prefix of oldText)
+    else if (!text.empty() && text.size() < oldText.size() &&
+             oldText.compare(0, text.size(), text) == 0) {
+        const size_t trimCount = oldText.size() - text.size();
+        const HRESULT hr = TruncateCompositionText(ec, trimCount);
+        if (SUCCEEDED(hr)) {
+            return S_OK;
+        }
+        // Fall back to full replacement if incremental truncation fails
+    }
+
+    // Case 3: Initial insertion, final LLM replacement, or non-prefix transformation
+    return SetCompositionTextFull(ec, text);
 }
 
 void TextService::SetDisplayAttribute(TfEditCookie ec, ITfRange* pRange) {

@@ -70,6 +70,7 @@ public:
     void HandleCommitKey();           // Enter / navigation / control combos
     void SetEnabled(bool enabled);
     void FlushBuffer();               // commit current buffer as-is
+    void CancelActiveCompositionForFocusChange(); // target application changed; cancel in-flight request & composition
 
     // --- Called from any thread ---
     void OnDebounceFired();
@@ -99,11 +100,13 @@ private:
 
     std::wstring buffer_;         // current composition buffer (UTF-16)
     std::wstring lastCommitted_;  // previous sentence, used as translation context
+    int64_t nextRequestId_ = 1;   // strictly monotonic request ID generator
     int64_t inflightRequestId_ = -1;
     std::wstring inflightSnapshot_;
 
     EngineState state_ = EngineState::Idle;
     std::wstring lastMessage_;
+    std::shared_ptr<std::atomic<bool>> alive_ = std::make_shared<std::atomic<bool>>(true);
 };
 
 } // namespace aiie

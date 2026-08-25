@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Composition/InputEngine.h"
+#include "Composition/SmartPasteManager.h"
 #include "Configuration/ConfigStore.h"
 #include "Core/Dispatcher.h"
 #include "Core/Logging.h"
@@ -35,6 +36,7 @@ public:
     void OnToggleHotkey();
     void OnSwapHotkey();
     void OnDiagnosticsHotkey();
+    void OnSmartPasteHotkey();
 
 private:
     void ApplyConfig();
@@ -64,6 +66,7 @@ private:
     std::shared_ptr<HookBackend> backend_;
     std::shared_ptr<InputEngine> engine_;
     std::shared_ptr<StatusWindow> status_;
+    std::shared_ptr<SmartPasteManager> smartPaste_;
 };
 
 } // namespace aiie

@@ -49,6 +49,7 @@ enum Ctrl : int {
     kTopK = 29,
     kMaxTokens = 30,
     kOperation = 31,
+    kSmartPaste = 32,
 };
 
 constexpr UINT kTestResultMsg = WM_APP + 100;
@@ -83,14 +84,23 @@ struct DialogData {
 // Base layout dimensions (at 96 DPI).
 constexpr int kMarginX = 20;
 constexpr int kLabelW = 130;
-constexpr int kGap = 12;
-constexpr int kControlW = 320;
+constexpr int kGap = 10;
+constexpr int kControlW = 340;
 constexpr int kControlH = 24;
-constexpr int kRowAdvance = 30;
+constexpr int kRowAdvance = 28;
 
-constexpr int kClientW = kMarginX * 2 + kLabelW + kGap + kControlW; // 502
-constexpr int kBaseClientH = 582;
-constexpr int kExpandedClientH = 774;
+constexpr int kFullW = kLabelW + kGap + kControlW; // 480
+constexpr int kClientW = kMarginX * 2 + kFullW;    // 520
+constexpr int kBaseClientH = 552;
+constexpr int kExpandedClientH = 668;
+
+// Advanced Settings 2-Column Grid dimensions (at 96 DPI).
+constexpr int kAdvColGap = 16;
+constexpr int kAdvColW = (kFullW - kAdvColGap) / 2; // 232
+constexpr int kAdvLabelW = 130;
+constexpr int kAdvGap = 8;
+constexpr int kAdvNumEditW = 84;
+constexpr int kAdvRowAdvance = 28;
 
 UINT GetWindowDpi(HWND hwnd) {
     HMODULE user32 = GetModuleHandleW(L"user32.dll");
@@ -166,11 +176,10 @@ void SetEdit(HWND edit, const std::wstring& text) {
 }
 
 std::wstring GetEdit(HWND edit) {
-    const int len = GetWindowTextLengthW(edit);
-    std::wstring text(static_cast<size_t>(len) + 1, L'\0');
-    GetWindowTextW(edit, text.data(), len + 1);
-    text.resize(static_cast<size_t>(len));
-    return text;
+    if (!edit) return L"";
+    wchar_t buf[512] = {};
+    GetWindowTextW(edit, buf, static_cast<int>(std::size(buf)));
+    return buf;
 }
 
 int SelectCombo(HWND combo, const std::wstring& value) {
@@ -389,10 +398,10 @@ void UpdateCapabilityControls(HWND hwnd, ProviderId provider, const std::wstring
     HWND topKEdit = GetDlgItem(hwnd, kTopK);
     HWND maxTokensEdit = GetDlgItem(hwnd, kMaxTokens);
 
-    EnableWindow(tempEdit, caps.supportsTemperature ? TRUE : FALSE);
-    EnableWindow(topPEdit, caps.supportsTopP ? TRUE : FALSE);
-    EnableWindow(topKEdit, caps.supportsTopK ? TRUE : FALSE);
-    EnableWindow(maxTokensEdit, caps.supportsMaxOutputTokens ? TRUE : FALSE);
+    EnableWindow(tempEdit, caps.SupportsTemperature() ? TRUE : FALSE);
+    EnableWindow(topPEdit, caps.SupportsTopP() ? TRUE : FALSE);
+    EnableWindow(topKEdit, caps.SupportsTopK() ? TRUE : FALSE);
+    EnableWindow(maxTokensEdit, caps.SupportsMaxOutputTokens() ? TRUE : FALSE);
 }
 
 void CollectValues(HWND hwnd, DialogData& data) {
@@ -426,6 +435,7 @@ void CollectValues(HWND hwnd, DialogData& data) {
     default: data.config.profile = TranslationProfile::Neutral; break;
     }
     data.config.customProfileInstructions = GetEdit(GetDlgItem(hwnd, kCustomInstructions));
+    data.config.smartPasteEnabled = (IsDlgButtonChecked(hwnd, kSmartPaste) == BST_CHECKED);
 
     data.config.endpoint = GetEdit(GetDlgItem(hwnd, kEndpoint));
     data.config.model = GetEdit(GetDlgItem(hwnd, kModel));
@@ -462,6 +472,9 @@ void CollectValues(HWND hwnd, DialogData& data) {
     } else {
         data.config.modelParams.maxOutputTokens.reset();
     }
+
+    // Sanitize collected model parameters against provider and model capabilities
+    data.config.modelParams = SanitizeModelParameters(data.config.provider, data.config.model, data.config.modelParams);
 
     // API key handling: an explicitly typed key is stored securely on OK for the active provider.
     const std::wstring typed = GetEdit(GetDlgItem(hwnd, kApiKey));
@@ -511,14 +524,11 @@ void ToggleExpansion(HWND hwnd, DialogData& data) {
 
     // Relocate action buttons to the bottom of current client height
     const int marginX = ScaleDpi(kMarginX, data.dpi);
-    const int labelW = ScaleDpi(kLabelW, data.dpi);
-    const int gap = ScaleDpi(kGap, data.dpi);
-    const int controlX = marginX + labelW + gap;
-    const int controlW = ScaleDpi(kControlW, data.dpi);
+    const int fullW = ScaleDpi(kFullW, data.dpi);
     const int actionW = ScaleDpi(100, data.dpi);
     const int actionH = ScaleDpi(28, data.dpi);
-    const int actionY = clientH - actionH - ScaleDpi(16, data.dpi);
-    const int cancelX = controlX + controlW - actionW;
+    const int actionY = clientH - actionH - ScaleDpi(14, data.dpi);
+    const int cancelX = marginX + fullW - actionW;
     const int okX = cancelX - actionW - ScaleDpi(10, data.dpi);
 
     SetWindowPos(GetDlgItem(hwnd, kOk), nullptr, okX, actionY, actionW, actionH, SWP_NOZORDER);
@@ -585,6 +595,12 @@ bool ShowSettingsDialog(HWND parent, AppConfig& config) {
                         const int profSel = ComboBox_GetCurSel(GetDlgItem(hwnd, kProfile));
                         HWND customEdit = GetDlgItem(hwnd, kCustomInstructions);
                         EnableWindow(customEdit, profSel == 4 ? TRUE : FALSE);
+                        return 0;
+                    }
+                    if ((HIWORD(wp) == CBN_SELCHANGE || HIWORD(wp) == CBN_EDITCHANGE) && LOWORD(wp) == kModel) {
+                        if (!data->updatingControls) {
+                            UpdateCapabilityControls(hwnd, data->currentProvider, GetEdit(GetDlgItem(hwnd, kModel)));
+                        }
                         return 0;
                     }
                     if (HIWORD(wp) == BN_CLICKED) {
@@ -823,7 +839,16 @@ bool ShowSettingsDialog(HWND parent, AppConfig& config) {
                               controlX, row, controlW, ScaleDpi(40, dpi),
                               ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL, kCustomInstructions);
     EnableWindow(customEdit, config.profile == TranslationProfile::Custom ? TRUE : FALSE);
-    row += ScaleDpi(46, dpi);
+    row += ScaleDpi(44, dpi);
+
+    // Smart Paste Checkbox
+    AddLabel(hwnd, font, L"Smart Paste", marginX, row, labelW, controlH);
+    HWND chkSmartPaste = CreateWindowExW(0, L"BUTTON", L"Enable Smart Paste (Ctrl+Shift+V)", WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                                         BS_AUTOCHECKBOX, controlX, row, controlW, controlH, hwnd,
+                                         reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSmartPaste)), GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(chkSmartPaste, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    CheckDlgButton(hwnd, kSmartPaste, config.smartPasteEnabled ? BST_CHECKED : BST_UNCHECKED);
+    row += rowAdv;
 
     AddSeparator(hwnd, marginX, row, fullW);
     row += ScaleDpi(8, dpi);
@@ -869,8 +894,8 @@ bool ShowSettingsDialog(HWND parent, AppConfig& config) {
 
     // Key Action Buttons
     const int btnH = ScaleDpi(26, dpi);
-    const int btnSaveW = ScaleDpi(85, dpi);
-    const int btnRemoveW = ScaleDpi(98, dpi);
+    const int btnSaveW = ScaleDpi(88, dpi);
+    const int btnRemoveW = ScaleDpi(100, dpi);
     const int btnGap = ScaleDpi(8, dpi);
     const int btnTestW = controlW - (btnSaveW + btnGap + btnRemoveW + btnGap);
     HWND btnSave = CreateWindowExW(0, L"BUTTON", L"Save Key", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
@@ -900,67 +925,70 @@ bool ShowSettingsDialog(HWND parent, AppConfig& config) {
 
     UpdateProviderControls(hwnd, config.provider, config.model, config.endpoint);
 
-    // --- Section 3: Advanced (Collapsible) ---
+    // --- Section 3: Advanced (Collapsible, Two-Column Layout) ---
     HWND toggleBtn = CreateWindowExW(0, L"BUTTON", L"Advanced Settings \u25be", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                                      marginX, row, ScaleDpi(160, dpi), ScaleDpi(26, dpi), hwnd,
                                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(kAdvancedToggle)), GetModuleHandleW(nullptr),
                                      nullptr);
     SendMessageW(toggleBtn, WM_SETFONT, reinterpret_cast<WPARAM>(fontBold), TRUE);
-    row += ScaleDpi(32, dpi);
+    row += ScaleDpi(30, dpi);
 
-    int advY = row;
-    // Debounce
-    HWND hLblDeb = AddLabel(hwnd, font, L"Debounce (ms)", marginX, advY, labelW, controlH);
-    HWND hEditDeb = AddEdit(hwnd, font, std::to_wstring(config.debounceMs).c_str(), controlX, advY, controlW, controlH, 0, kDebounce);
+    const int advY = row;
+    const int col1LabelX = marginX;
+    const int col1LabelW = ScaleDpi(kAdvLabelW, dpi);
+    const int col1EditX = col1LabelX + col1LabelW + ScaleDpi(kAdvGap, dpi);
+    const int col1EditW = ScaleDpi(kAdvNumEditW, dpi);
+
+    const int col2LabelX = marginX + ScaleDpi(kAdvColW + kAdvColGap, dpi);
+    const int col2LabelW = ScaleDpi(kAdvLabelW, dpi);
+    const int col2EditX = col2LabelX + col2LabelW + ScaleDpi(kAdvGap, dpi);
+    const int col2EditW = ScaleDpi(kAdvNumEditW, dpi);
+
+    const int advRowAdv = ScaleDpi(kAdvRowAdvance, dpi);
+
+    // Row 1: Debounce (Col 1) & Min Chars (Col 2)
+    const int r1Y = advY;
+    HWND hLblDeb = AddLabel(hwnd, font, L"Debounce (ms)", col1LabelX, r1Y, col1LabelW, controlH);
+    HWND hEditDeb = AddEdit(hwnd, font, std::to_wstring(config.debounceMs).c_str(), col1EditX, r1Y, col1EditW, controlH, 0, kDebounce);
+    HWND hLblMin = AddLabel(hwnd, font, L"Min Characters", col2LabelX, r1Y, col2LabelW, controlH);
+    HWND hEditMin = AddEdit(hwnd, font, std::to_wstring(config.minChars).c_str(), col2EditX, r1Y, col2EditW, controlH, 0, kMinChars);
     data.advancedControls.push_back(hLblDeb);
     data.advancedControls.push_back(hEditDeb);
-    advY += rowAdv;
-
-    // Min Chars
-    HWND hLblMin = AddLabel(hwnd, font, L"Min Characters", marginX, advY, labelW, controlH);
-    HWND hEditMin = AddEdit(hwnd, font, std::to_wstring(config.minChars).c_str(), controlX, advY, controlW, controlH, 0, kMinChars);
     data.advancedControls.push_back(hLblMin);
     data.advancedControls.push_back(hEditMin);
-    advY += rowAdv;
 
-    // Max Buffer
-    HWND hLblMax = AddLabel(hwnd, font, L"Max Buffer Chars", marginX, advY, labelW, controlH);
-    HWND hEditMax = AddEdit(hwnd, font, std::to_wstring(config.maxBufferChars).c_str(), controlX, advY, controlW, controlH, 0, kMaxBuffer);
+    // Row 2: Max Buffer (Col 1) & Max Output Tokens (Col 2)
+    const int r2Y = advY + advRowAdv;
+    HWND hLblMax = AddLabel(hwnd, font, L"Max Buffer Chars", col1LabelX, r2Y, col1LabelW, controlH);
+    HWND hEditMax = AddEdit(hwnd, font, std::to_wstring(config.maxBufferChars).c_str(), col1EditX, r2Y, col1EditW, controlH, 0, kMaxBuffer);
+    std::wstring maxTokensVal = config.modelParams.maxOutputTokens.has_value() ? std::to_wstring(*config.modelParams.maxOutputTokens) : L"";
+    HWND hLblMaxTok = AddLabel(hwnd, font, L"Max Output Tokens", col2LabelX, r2Y, col2LabelW, controlH);
+    HWND hEditMaxTok = AddEdit(hwnd, font, maxTokensVal.c_str(), col2EditX, r2Y, col2EditW, controlH, 0, kMaxTokens);
     data.advancedControls.push_back(hLblMax);
     data.advancedControls.push_back(hEditMax);
-    advY += rowAdv;
-
-    // Temperature (Optional override)
-    std::wstring tempVal = config.modelParams.temperature.has_value() ? std::to_wstring(*config.modelParams.temperature) : L"";
-    HWND hLblTemp = AddLabel(hwnd, font, L"Temperature (0.0\u20132.0)", marginX, advY, labelW, controlH);
-    HWND hEditTemp = AddEdit(hwnd, font, tempVal.c_str(), controlX, advY, controlW, controlH, 0, kTemperature);
-    data.advancedControls.push_back(hLblTemp);
-    data.advancedControls.push_back(hEditTemp);
-    advY += rowAdv;
-
-    // Top P (Optional override)
-    std::wstring topPVal = config.modelParams.topP.has_value() ? std::to_wstring(*config.modelParams.topP) : L"";
-    HWND hLblTopP = AddLabel(hwnd, font, L"Top P (0.0\u20131.0)", marginX, advY, labelW, controlH);
-    HWND hEditTopP = AddEdit(hwnd, font, topPVal.c_str(), controlX, advY, controlW, controlH, 0, kTopP);
-    data.advancedControls.push_back(hLblTopP);
-    data.advancedControls.push_back(hEditTopP);
-    advY += rowAdv;
-
-    // Top K (Gemini only)
-    std::wstring topKVal = config.modelParams.topK.has_value() ? std::to_wstring(*config.modelParams.topK) : L"";
-    HWND hLblTopK = AddLabel(hwnd, font, L"Top K (1\u2013100)", marginX, advY, labelW, controlH);
-    HWND hEditTopK = AddEdit(hwnd, font, topKVal.c_str(), controlX, advY, controlW, controlH, 0, kTopK);
-    data.advancedControls.push_back(hLblTopK);
-    data.advancedControls.push_back(hEditTopK);
-    advY += rowAdv;
-
-    // Max Tokens (Optional override)
-    std::wstring maxTokensVal = config.modelParams.maxOutputTokens.has_value() ? std::to_wstring(*config.modelParams.maxOutputTokens) : L"";
-    HWND hLblMaxTok = AddLabel(hwnd, font, L"Max Output Tokens", marginX, advY, labelW, controlH);
-    HWND hEditMaxTok = AddEdit(hwnd, font, maxTokensVal.c_str(), controlX, advY, controlW, controlH, 0, kMaxTokens);
     data.advancedControls.push_back(hLblMaxTok);
     data.advancedControls.push_back(hEditMaxTok);
-    advY += rowAdv;
+
+    // Row 3: Temperature (Col 1) & Top P (Col 2)
+    const int r3Y = advY + advRowAdv * 2;
+    std::wstring tempVal = config.modelParams.temperature.has_value() ? std::to_wstring(*config.modelParams.temperature) : L"";
+    HWND hLblTemp = AddLabel(hwnd, font, L"Temperature (0.0\u20132.0)", col1LabelX, r3Y, col1LabelW, controlH);
+    HWND hEditTemp = AddEdit(hwnd, font, tempVal.c_str(), col1EditX, r3Y, col1EditW, controlH, 0, kTemperature);
+    std::wstring topPVal = config.modelParams.topP.has_value() ? std::to_wstring(*config.modelParams.topP) : L"";
+    HWND hLblTopP = AddLabel(hwnd, font, L"Top P (0.0\u20131.0)", col2LabelX, r3Y, col2LabelW, controlH);
+    HWND hEditTopP = AddEdit(hwnd, font, topPVal.c_str(), col2EditX, r3Y, col2EditW, controlH, 0, kTopP);
+    data.advancedControls.push_back(hLblTemp);
+    data.advancedControls.push_back(hEditTemp);
+    data.advancedControls.push_back(hLblTopP);
+    data.advancedControls.push_back(hEditTopP);
+
+    // Row 4: Top K (Col 1)
+    const int r4Y = advY + advRowAdv * 3;
+    std::wstring topKVal = config.modelParams.topK.has_value() ? std::to_wstring(*config.modelParams.topK) : L"";
+    HWND hLblTopK = AddLabel(hwnd, font, L"Top K (1\u2013100)", col1LabelX, r4Y, col1LabelW, controlH);
+    HWND hEditTopK = AddEdit(hwnd, font, topKVal.c_str(), col1EditX, r4Y, col1EditW, controlH, 0, kTopK);
+    data.advancedControls.push_back(hLblTopK);
+    data.advancedControls.push_back(hEditTopK);
 
     for (HWND hCtrl : data.advancedControls) {
         ShowWindow(hCtrl, SW_HIDE);
@@ -970,8 +998,8 @@ bool ShowSettingsDialog(HWND parent, AppConfig& config) {
     // --- Action Buttons (Bottom of client area) ---
     const int actionW = ScaleDpi(100, dpi);
     const int actionH = ScaleDpi(28, dpi);
-    const int actionY = clientH - actionH - ScaleDpi(16, dpi);
-    const int cancelX = controlX + controlW - actionW;
+    const int actionY = clientH - actionH - ScaleDpi(14, dpi);
+    const int cancelX = marginX + fullW - actionW;
     const int okX = cancelX - actionW - ScaleDpi(10, dpi);
 
     HWND btnOk = CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,

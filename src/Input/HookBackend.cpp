@@ -89,9 +89,10 @@ void WINAPI HookBackend::ForegroundChanged(HWINEVENTHOOK hook, DWORD event, HWND
     (void)idChild;
     (void)thread;
     (void)time;
-    // Runs on the hook thread (WINEVENT_OUTOFCONTEXT).
+    // Runs on the hook thread (WINEVENT_OUTOFCONTEXT). Target application changed;
+    // explicitly cancel active composition so old results never commit into the new target.
     if (g_hookBackend && g_hookBackend->engine_) {
-        g_hookBackend->engine_->FlushBuffer();
+        g_hookBackend->engine_->CancelActiveCompositionForFocusChange();
     }
 }
 
@@ -108,10 +109,16 @@ LRESULT HookBackend::OnHookEvent(int code, WPARAM wp, LPARAM lp) {
         const auto* kbd = reinterpret_cast<KBDLLHOOKSTRUCT*>(lp);
         const bool down = (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN);
 
-        // Ignore our own injected keys (commit backspaces/text). LL hook
-        // delivery is asynchronous, so also honor a grace window after the
-        // commit: without it the engine would feed our own injection back in,
-        // corrupting the buffer and triggering a feedback loop.
+        // 1. Authoritative check: Ignore AIInputEngine's own synthetic keyboard events via
+        // dedicated dwExtraInfo signature. This guarantees immunity to re-entrancy independent
+        // of injection duration or timing.
+        const bool isAiieSynthetic = ((kbd->flags & LLKHF_INJECTED) != 0) &&
+                                     (kbd->dwExtraInfo == kAiieSyntheticSignature);
+        if (isAiieSynthetic) {
+            return CallNextHookEx(nullptr, code, wp, lp);
+        }
+
+        // 2. Secondary lifecycle protection: general injected events during active commit window.
         const bool injected = (kbd->flags & LLKHF_INJECTED) != 0;
         if (injected && (selfInjecting_.load() || GetTickCount64() < injectGuardUntilMs_.load())) {
             return CallNextHookEx(nullptr, code, wp, lp);
@@ -289,6 +296,8 @@ void HookBackend::CommitReplacement(std::wstring replacement, const std::wstring
                                reinterpret_cast<uintptr_t>(fgHwnd), procName);
 
         std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        // Extend guard grace period to 500ms after injection completes as secondary defense
+        injectGuardUntilMs_.store(GetTickCount64() + 500);
         selfInjecting_.store(false);
         markDone();
     }).detach();
@@ -483,6 +492,7 @@ void HookBackend::InjectBackspaces(size_t count) {
         INPUT in{};
         in.type = INPUT_KEYBOARD;
         in.ki.wVk = VK_BACK;
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
         SendInput(1, &in, sizeof(in));
         in.ki.dwFlags = KEYEVENTF_KEYUP;
         SendInput(1, &in, sizeof(in));
@@ -498,7 +508,10 @@ void HookBackend::InjectText(const std::wstring& text) {
     // per-key SendInput drops whole characters, and KEYEVENTF_UNICODE is dropped
     // entirely. Reliable delivery requires human-paced timing: a 40ms shift hold
     // before shift-modified letters and ~15ms between key events.
-    const auto sendOne = [](INPUT in) { SendInput(1, &in, sizeof(in)); };
+    const auto sendOne = [](INPUT in) {
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        SendInput(1, &in, sizeof(in));
+    };
     const WORD shiftScan = static_cast<WORD>(MapVirtualKeyW(VK_LSHIFT, MAPVK_VK_TO_VSC));
     for (const wchar_t c : text) {
         // Prefer layout-mapped virtual keys: real keystrokes behave identically

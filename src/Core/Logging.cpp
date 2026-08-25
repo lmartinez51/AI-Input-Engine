@@ -67,7 +67,7 @@ void Logger::Log(LogLevel level, std::wstring_view category, const std::wstring&
         if (ring_.size() >= kRingCapacity) {
             ring_.erase(ring_.begin(), ring_.begin() + static_cast<ptrdiff_t>(ring_.size() - kRingCapacity + 1));
         }
-        ring_.push_back(LogEntry{level, std::wstring(category), message, 0});
+        ring_.push_back(LogEntry{level, std::wstring(category), message, GetTickCount64()});
     }
 
     std::lock_guard lock(fileMutex_);

@@ -1,6 +1,7 @@
 #include "Configuration/ConfigStore.h"
 
 #include "Configuration/CredentialStore.h"
+#include "Configuration/ModelCapabilities.h"
 #include "Core/Json.h"
 #include "Core/Utf.h"
 
@@ -169,6 +170,11 @@ AppConfig ConfigStore::FromJson(const json::Value& root) {
     }
 
     // Model parameters
+    if (const json::Value* rEffort = root.find(L"reasoningEffort")) {
+        if (rEffort->is_string()) {
+            c.modelParams.reasoningEffort = rEffort->as_string();
+        }
+    }
     if (root.find(L"temperature")) {
         c.modelParams.temperature = root.get_number(L"temperature");
     }
@@ -182,11 +188,16 @@ AppConfig ConfigStore::FromJson(const json::Value& root) {
         c.modelParams.maxOutputTokens = static_cast<int>(root.get_int(L"maxOutputTokens"));
     }
 
+    // Sanitize model parameters for the loaded provider and model
+    c.modelParams = SanitizeModelParameters(c.provider, c.model, c.modelParams);
+
     c.debounceMs = static_cast<int>(root.get_int(L"debounceMs", c.debounceMs));
     c.minChars = static_cast<int>(root.get_int(L"minChars", c.minChars));
     c.maxBufferChars = static_cast<int>(root.get_int(L"maxBufferChars", c.maxBufferChars));
     c.requestTimeoutMs = static_cast<int>(root.get_int(L"requestTimeoutMs", c.requestTimeoutMs));
     c.maxRetries = static_cast<int>(root.get_int(L"maxRetries", c.maxRetries));
+
+    c.smartPasteEnabled = root.get_bool(L"smartPasteEnabled", c.smartPasteEnabled);
 
     c.hotkeyToggle = {static_cast<UINT>(root.get_int(L"hotkeyToggleMods", c.hotkeyToggle.modifiers)),
                       static_cast<UINT>(root.get_int(L"hotkeyToggleVk", c.hotkeyToggle.vk))};
@@ -194,6 +205,8 @@ AppConfig ConfigStore::FromJson(const json::Value& root) {
                     static_cast<UINT>(root.get_int(L"hotkeySwapVk", c.hotkeySwap.vk))};
     c.hotkeyDiagnostics = {static_cast<UINT>(root.get_int(L"hotkeyDiagnosticsMods", c.hotkeyDiagnostics.modifiers)),
                            static_cast<UINT>(root.get_int(L"hotkeyDiagnosticsVk", c.hotkeyDiagnostics.vk))};
+    c.hotkeySmartPaste = {static_cast<UINT>(root.get_int(L"hotkeySmartPasteMods", c.hotkeySmartPaste.modifiers)),
+                          static_cast<UINT>(root.get_int(L"hotkeySmartPasteVk", c.hotkeySmartPaste.vk))};
 
     const int level = static_cast<int>(root.get_int(L"logLevel", static_cast<int64_t>(c.logLevel)));
     if (level >= static_cast<int>(LogLevel::Error) && level <= static_cast<int>(LogLevel::Trace)) {
@@ -222,6 +235,7 @@ AppConfig ConfigStore::FromJson(const json::Value& root) {
 json::Value ConfigStore::ToJson(const AppConfig& c) {
     json::Value root = json::Value::MakeObject();
     root.set(L"enabled", c.enabled);
+    root.set(L"smartPasteEnabled", c.smartPasteEnabled);
     root.set(L"operation", std::wstring(OperationName(c.operation)));
     root.set(L"sourceLanguage", c.sourceLanguage);
     root.set(L"targetLanguage", c.targetLanguage);
@@ -234,6 +248,9 @@ json::Value ConfigStore::ToJson(const AppConfig& c) {
     root.set(L"model", c.model);
     root.set(L"endpoint", c.endpoint);
 
+    if (c.modelParams.reasoningEffort.has_value()) {
+        root.set(L"reasoningEffort", *c.modelParams.reasoningEffort);
+    }
     if (c.modelParams.temperature.has_value()) {
         root.set(L"temperature", *c.modelParams.temperature);
     }
@@ -259,6 +276,8 @@ json::Value ConfigStore::ToJson(const AppConfig& c) {
     root.set(L"hotkeySwapVk", c.hotkeySwap.vk);
     root.set(L"hotkeyDiagnosticsMods", c.hotkeyDiagnostics.modifiers);
     root.set(L"hotkeyDiagnosticsVk", c.hotkeyDiagnostics.vk);
+    root.set(L"hotkeySmartPasteMods", c.hotkeySmartPaste.modifiers);
+    root.set(L"hotkeySmartPasteVk", c.hotkeySmartPaste.vk);
     root.set(L"logLevel", static_cast<int64_t>(c.logLevel));
     root.set(L"logRawText", c.logRawText);
     root.set(L"warnOnExternalSend", c.warnOnExternalSend);

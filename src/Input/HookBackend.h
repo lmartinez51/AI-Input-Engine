@@ -15,6 +15,11 @@
 
 namespace aiie {
 
+// Dedicated synthetic keyboard input signature applied to SendInput KEYBDINPUT.dwExtraInfo
+// so the WH_KEYBOARD_LL hook reliably identifies AIInputEngine's own injected events
+// independent of injection duration or timing.
+inline constexpr ULONG_PTR kAiieSyntheticSignature = 0x41494945; // 'AIIE'
+
 // Low-level keyboard hook (WH_KEYBOARD_LL) backend.
 //
 // Design notes:

@@ -14,13 +14,13 @@ namespace aiie {
 class StatusWindow {
 public:
     StatusWindow();
-    ~StatusWindow();
+    virtual ~StatusWindow();
 
     StatusWindow(const StatusWindow&) = delete;
     StatusWindow& operator=(const StatusWindow&) = delete;
 
-    void Show(std::wstring_view text); // auto-hides after a few seconds
-    void Hide();
+    virtual void Show(std::wstring_view text); // auto-hides after a few seconds
+    virtual void Hide();
     bool Visible() const;
 
 private:

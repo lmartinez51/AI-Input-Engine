@@ -28,6 +28,8 @@ add_library(aiie_core STATIC
     src/Core/Dispatcher.cpp
     src/Core/StatusWindow.h
     src/Core/StatusWindow.cpp
+    src/Core/ClipboardHelper.h
+    src/Core/ClipboardHelper.cpp
     src/Configuration/AppConfig.h
     src/Configuration/AppConfig.cpp
     src/Configuration/LanguageRegistry.h
@@ -57,6 +59,8 @@ add_library(aiie_core STATIC
     src/Providers/ProviderFactory.cpp
     src/Composition/InputEngine.h
     src/Composition/InputEngine.cpp
+    src/Composition/SmartPasteManager.h
+    src/Composition/SmartPasteManager.cpp
     src/Input/HookBackend.h
     src/Input/HookBackend.cpp
     src/Input/KeyTranslator.h
@@ -123,8 +127,12 @@ add_executable(aiie_unit_tests
     tests/unit/provider_factory_test.cpp
     tests/unit/shutdown_test.cpp
     tests/unit/settings_test.cpp
+    tests/unit/smart_paste_test.cpp
+    tests/unit/diagnostics_test.cpp
     src/UI/SettingsDialog.h
     src/UI/SettingsDialog.cpp
+    src/UI/DiagnosticsWindow.h
+    src/UI/DiagnosticsWindow.cpp
 )
 target_link_libraries(aiie_unit_tests PRIVATE aiie_core shell32 comctl32 ole32 uuid)
 target_include_directories(aiie_unit_tests PRIVATE tests)

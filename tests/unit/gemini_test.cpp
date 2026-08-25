@@ -62,7 +62,7 @@ TEST(gemini_build_request_body_correct_and_rewrite) {
 
     const std::wstring sysText = root.find(L"systemInstruction")->find(L"parts")
                                      ->as_array().front().get_string(L"text");
-    CHECK(sysText.find(L"writing correction and rewriting engine") != std::wstring::npos);
+    CHECK(sysText.find(L"text transformation engine") != std::wstring::npos);
     CHECK(sysText.find(L"Do NOT translate") != std::wstring::npos);
     CHECK(sysText.find(L"Spanish") != std::wstring::npos);
 }

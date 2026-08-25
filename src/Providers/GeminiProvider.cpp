@@ -91,7 +91,9 @@ void GeminiProvider::CancelAll() {
         p.cancelled->store(true);
     }
     queue_.clear();
-    // The in-flight request is cancelled via its flag.
+    if (activeCancelled_) {
+        activeCancelled_->store(true);
+    }
 }
 
 void GeminiProvider::Translate(TranslationRequest request, TranslationCallback callback) {
@@ -117,6 +119,7 @@ void GeminiProvider::WorkerLoop() {
             }
             p = std::move(queue_.front());
             queue_.pop_front();
+            activeCancelled_ = p.cancelled;
         }
         if (p.cancelled->load()) {
             TranslationResult r;
@@ -125,6 +128,10 @@ void GeminiProvider::WorkerLoop() {
             r.error = L"cancelled";
             if (p.callback) {
                 p.callback(std::move(r));
+            }
+            {
+                std::lock_guard lock(mutex_);
+                activeCancelled_.reset();
             }
             continue;
         }
@@ -144,6 +151,10 @@ void GeminiProvider::WorkerLoop() {
         }
         if (p.callback) {
             p.callback(std::move(result));
+        }
+        {
+            std::lock_guard lock(mutex_);
+            activeCancelled_.reset();
         }
     }
 }
@@ -562,15 +573,7 @@ std::wstring GeminiProvider::BuildRequestBody(const TranslationRequest& request,
     root.set(L"systemInstruction", std::move(sys));
 
     json::Value userPart = json::Value::MakeObject();
-    if (!request.context.empty()) {
-        const std::wstring label = (request.operation == TransformOperation::CorrectAndRewrite)
-                                       ? L"Text to correct and rewrite:"
-                                       : L"Text to translate:";
-        userPart.set(L"text", std::format(L"Previous context (for coherence only):\n{}\n\n{}\n{}",
-                                          request.context, label, request.text));
-    } else {
-        userPart.set(L"text", request.text);
-    }
+    userPart.set(L"text", FormatUserPayload(request));
     json::Value contents = json::Value::MakeArray();
     json::Value content = json::Value::MakeObject();
     content.set(L"role", L"user");

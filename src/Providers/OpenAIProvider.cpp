@@ -1,5 +1,6 @@
 #include "Providers/OpenAIProvider.h"
 
+#include "Configuration/ModelCapabilities.h"
 #include "Core/Json.h"
 #include "Core/Logging.h"
 #include "Core/Utf.h"
@@ -180,6 +181,192 @@ bool PerformHttpRequest(const std::wstring& endpoint, const std::wstring& authBe
     return true;
 }
 
+// Performs a streaming HTTPS POST request via WinHTTP and Server-Sent Events (SSE).
+bool PerformHttpStreamingRequest(const std::wstring& endpoint, const std::wstring& authBearerKey,
+                                 const std::string& utf8Body, int timeoutMs,
+                                 const std::shared_ptr<std::atomic<bool>>& cancelled,
+                                 RequestTelemetry& telemetry,
+                                 DWORD& outStatusCode, std::wstring& outResponseBody,
+                                 std::wstring& outError) {
+    outStatusCode = 0;
+    outResponseBody.clear();
+    outError.clear();
+    telemetry.streamed = true;
+
+    if (cancelled && cancelled->load()) {
+        telemetry.cancelled = true;
+        outError = L"Request cancelled";
+        return false;
+    }
+
+    const std::wstring host = HostFromUrl(endpoint);
+    const std::wstring path = PathFromUrl(endpoint);
+
+    HINTERNET session = WinHttpOpen(L"AIInputEngine/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) {
+        outError = std::format(L"WinHttpOpen failed: {}", GetLastError());
+        return false;
+    }
+
+    WinHttpSetTimeouts(session, timeoutMs / 4, timeoutMs / 2, timeoutMs, timeoutMs);
+
+    HINTERNET connect = WinHttpConnect(session, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (!connect) {
+        outError = std::format(L"WinHttpConnect failed: {}", GetLastError());
+        WinHttpCloseHandle(session);
+        return false;
+    }
+
+    HINTERNET request = WinHttpOpenRequest(connect, L"POST", path.c_str(), nullptr,
+                                          WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                          WINHTTP_FLAG_SECURE);
+    if (!request) {
+        outError = std::format(L"WinHttpOpenRequest failed: {}", GetLastError());
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        return false;
+    }
+
+    std::wstring headers = L"Content-Type: application/json; charset=utf-8\r\nAccept: text/event-stream\r\n";
+    if (!authBearerKey.empty()) {
+        headers += L"Authorization: Bearer " + authBearerKey + L"\r\n";
+    }
+
+    const auto tReqStart = std::chrono::steady_clock::now();
+
+    const BOOL sent = WinHttpSendRequest(request, headers.c_str(), static_cast<DWORD>(headers.size()),
+                                         const_cast<char*>(utf8Body.data()),
+                                         static_cast<DWORD>(utf8Body.size()),
+                                         static_cast<DWORD>(utf8Body.size()), 0);
+    if (!sent) {
+        outError = std::format(L"WinHttpSendRequest failed: {}", GetLastError());
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        return false;
+    }
+
+    if (!WinHttpReceiveResponse(request, nullptr)) {
+        outError = std::format(L"WinHttpReceiveResponse failed: {}", GetLastError());
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        return false;
+    }
+
+    DWORD statusCode = 0;
+    DWORD statusSize = sizeof(statusCode);
+    WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                        WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize,
+                        WINHTTP_NO_HEADER_INDEX);
+    outStatusCode = statusCode;
+
+    if (statusCode != 200) {
+        // Read full error body
+        std::string responseBytes;
+        DWORD bytesAvailable = 0;
+        while (WinHttpQueryDataAvailable(request, &bytesAvailable) && bytesAvailable > 0) {
+            const size_t prev = responseBytes.size();
+            responseBytes.resize(prev + bytesAvailable);
+            DWORD bytesRead = 0;
+            if (!WinHttpReadData(request, responseBytes.data() + prev, bytesAvailable, &bytesRead)) {
+                break;
+            }
+            responseBytes.resize(prev + bytesRead);
+            if (bytesRead == 0) break;
+        }
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        outResponseBody = utf::FromUtf8(responseBytes);
+        return true;
+    }
+
+    // Stream reading loop
+    std::string sseBuffer;
+    std::wstring accumulatedText;
+    std::wstring doneText;
+    bool completed = false;
+    std::vector<SseEvent> events;
+    std::vector<char> chunkBuf(8192);
+
+    while (true) {
+        if (cancelled && cancelled->load()) {
+            telemetry.cancelled = true;
+            WinHttpCloseHandle(request);
+            WinHttpCloseHandle(connect);
+            WinHttpCloseHandle(session);
+            outError = L"Request cancelled";
+            return false;
+        }
+
+        DWORD bytesAvailable = 0;
+        if (!WinHttpQueryDataAvailable(request, &bytesAvailable)) {
+            break;
+        }
+        if (bytesAvailable == 0) {
+            break; // Stream EOF
+        }
+
+        DWORD bytesToRead = std::min<DWORD>(bytesAvailable, static_cast<DWORD>(chunkBuf.size()));
+        DWORD bytesRead = 0;
+        if (!WinHttpReadData(request, chunkBuf.data(), bytesToRead, &bytesRead) || bytesRead == 0) {
+            break;
+        }
+
+        events.clear();
+        OpenAIProvider::ParseSseChunk(std::string_view(chunkBuf.data(), bytesRead), sseBuffer, events);
+
+        for (const auto& ev : events) {
+            std::wstring sseErr;
+            if (!OpenAIProvider::ProcessSseEvent(ev, accumulatedText, doneText, completed, sseErr)) {
+                outError = sseErr;
+                WinHttpCloseHandle(request);
+                WinHttpCloseHandle(connect);
+                WinHttpCloseHandle(session);
+                return false;
+            }
+
+            // If we just received the first delta text, record TTFT
+            if (telemetry.firstTokenTimeMs == 0 && !accumulatedText.empty()) {
+                const auto tFirst = std::chrono::steady_clock::now();
+                telemetry.firstTokenTimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(tFirst - tReqStart).count();
+            }
+        }
+
+        if (completed) {
+            break;
+        }
+    }
+
+    const auto tEnd = std::chrono::steady_clock::now();
+    telemetry.completionTimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(tEnd - tReqStart).count();
+    telemetry.completed = completed;
+
+    WinHttpCloseHandle(request);
+    WinHttpCloseHandle(connect);
+    WinHttpCloseHandle(session);
+
+    if (cancelled && cancelled->load()) {
+        telemetry.cancelled = true;
+        outError = L"Request cancelled";
+        return false;
+    }
+
+    // Determine final output string (prefer authoritative doneText, fallback to accumulatedText)
+    std::wstring finalRaw = !doneText.empty() ? doneText : accumulatedText;
+    outResponseBody = TrimWhitespaceAndQuotes(finalRaw);
+    telemetry.outputLength = outResponseBody.size();
+
+    if (outResponseBody.empty() && !completed) {
+        outError = L"Stream ended before output completion";
+        return false;
+    }
+
+    return true;
+}
+
 } // namespace
 
 OpenAIProvider::OpenAIProvider(OpenAIConfig config) : config_(std::move(config)) {
@@ -220,15 +407,191 @@ void OpenAIProvider::Translate(TranslationRequest request, TranslationCallback c
 }
 
 std::wstring OpenAIProvider::BuildRequestBody(const TranslationRequest& request,
-                                              std::wstring_view model) {
+                                              std::wstring_view model,
+                                              bool stream,
+                                              std::optional<std::wstring_view> reasoningEffort,
+                                              const ModelParameters* params) {
     json::Value root = json::Value::MakeObject();
     root.set(L"model", std::wstring(model));
 
     const std::wstring instructions = BuildInstructionsForRequest(request);
     root.set(L"instructions", instructions);
-    root.set(L"input", request.text);
+    root.set(L"input", FormatUserPayload(request));
+
+    const ModelCapabilities caps = GetModelCapabilities(ProviderId::OpenAI, model);
+
+    if (stream && caps.SupportsStreaming()) {
+        root.set(L"stream", true);
+    }
+
+    // Merge requested parameters
+    ModelParameters merged;
+    if (params) {
+        merged = *params;
+    }
+    if (reasoningEffort.has_value() && !reasoningEffort->empty()) {
+        merged.reasoningEffort = std::wstring(*reasoningEffort);
+    }
+
+    // Sanitize parameters strictly against model capabilities
+    const ModelParameters validParams = SanitizeModelParameters(ProviderId::OpenAI, model, merged);
+
+    if (caps.SupportsReasoningEffort() && validParams.reasoningEffort.has_value()) {
+        json::Value reasoningObj = json::Value::MakeObject();
+        reasoningObj.set(L"effort", *validParams.reasoningEffort);
+        root.set(L"reasoning", std::move(reasoningObj));
+    }
+
+    if (caps.SupportsTemperature() && validParams.temperature.has_value()) {
+        root.set(L"temperature", *validParams.temperature);
+    }
+
+    if (caps.SupportsTopP() && validParams.topP.has_value()) {
+        root.set(L"top_p", *validParams.topP);
+    }
+
+    if (caps.SupportsMaxOutputTokens() && validParams.maxOutputTokens.has_value()) {
+        root.set(L"max_output_tokens", static_cast<double>(*validParams.maxOutputTokens));
+    }
 
     return json::Serialize(root);
+}
+
+void OpenAIProvider::ParseSseChunk(std::string_view chunk, std::string& buffer, std::vector<SseEvent>& outEvents) {
+    buffer.append(chunk.data(), chunk.size());
+
+    while (true) {
+        size_t delimPos = std::string::npos;
+        size_t delimLen = 0;
+
+        size_t p1 = buffer.find("\n\n");
+        size_t p2 = buffer.find("\r\n\r\n");
+
+        if (p1 != std::string::npos && (p2 == std::string::npos || p1 < p2)) {
+            delimPos = p1;
+            delimLen = 2;
+        } else if (p2 != std::string::npos) {
+            delimPos = p2;
+            delimLen = 4;
+        }
+
+        if (delimPos == std::string::npos) {
+            break;
+        }
+
+        std::string_view block(buffer.data(), delimPos);
+        std::wstring currentEvent;
+        std::wstring currentData;
+
+        size_t lineStart = 0;
+        while (lineStart < block.size()) {
+            size_t lineEnd = block.find('\n', lineStart);
+            if (lineEnd == std::string::npos) {
+                lineEnd = block.size();
+            }
+
+            size_t len = lineEnd - lineStart;
+            std::string_view line(block.data() + lineStart, len);
+            if (!line.empty() && line.back() == '\r') {
+                line.remove_suffix(1);
+            }
+            lineStart = lineEnd + 1;
+
+            if (line.starts_with("event:")) {
+                std::string_view val = line.substr(6);
+                while (!val.empty() && val.front() == ' ') val.remove_prefix(1);
+                currentEvent = utf::FromUtf8(val);
+            } else if (line.starts_with("data:")) {
+                std::string_view val = line.substr(5);
+                while (!val.empty() && val.front() == ' ') val.remove_prefix(1);
+                if (!currentData.empty()) {
+                    currentData.push_back(L'\n');
+                }
+                currentData.append(utf::FromUtf8(val));
+            }
+        }
+
+        if (!currentEvent.empty() || !currentData.empty()) {
+            outEvents.push_back({std::move(currentEvent), std::move(currentData)});
+        }
+
+        buffer.erase(0, delimPos + delimLen);
+    }
+}
+
+bool OpenAIProvider::ProcessSseEvent(const SseEvent& event, std::wstring& inOutAccumulatedText,
+                                     std::wstring& inOutDoneText, bool& outCompleted, std::wstring& outError) {
+    if (event.data == L"[DONE]") {
+        outCompleted = true;
+        return true;
+    }
+
+    json::Value root;
+    try {
+        root = json::Parse(event.data);
+    } catch (const json::JsonError&) {
+        if (event.eventType == L"error" || event.eventType == L"response.failed") {
+            outError = event.data;
+            outCompleted = false;
+            return false;
+        }
+        return true;
+    }
+
+    if (event.eventType == L"error" || event.eventType == L"response.failed" || root.find(L"error")) {
+        if (const json::Value* errObj = root.find(L"error")) {
+            if (errObj->is_object()) {
+                outError = errObj->get_string(L"message", L"OpenAI streaming error");
+                outCompleted = false;
+                return false;
+            }
+        }
+        if (const json::Value* respObj = root.find(L"response")) {
+            if (respObj->is_object()) {
+                if (const json::Value* errObj = respObj->find(L"error")) {
+                    if (errObj->is_object()) {
+                        outError = errObj->get_string(L"message", L"OpenAI streaming error");
+                        outCompleted = false;
+                        return false;
+                    }
+                }
+            }
+        }
+        outError = root.get_string(L"message", L"OpenAI streaming error");
+        outCompleted = false;
+        return false;
+    }
+
+    if (event.eventType == L"response.output_text.delta") {
+        std::wstring delta = root.get_string(L"delta", L"");
+        if (!delta.empty()) {
+            inOutAccumulatedText.append(delta);
+        }
+        return true;
+    }
+
+    if (event.eventType == L"response.output_text.done") {
+        std::wstring text = root.get_string(L"text", L"");
+        if (!text.empty()) {
+            inOutDoneText = std::move(text);
+        }
+        return true;
+    }
+
+    if (event.eventType == L"response.completed" || event.eventType == L"response.done") {
+        outCompleted = true;
+        if (const json::Value* respObj = root.find(L"response")) {
+            if (respObj->is_object()) {
+                std::wstring outText, err;
+                if (ParseResponseBody(json::Serialize(*respObj), outText, err) && !outText.empty()) {
+                    inOutDoneText = std::move(outText);
+                }
+            }
+        }
+        return true;
+    }
+
+    return true;
 }
 
 bool OpenAIProvider::ParseResponseBody(std::wstring_view body, std::wstring& outText,
@@ -412,7 +775,18 @@ TranslationResult OpenAIProvider::ExecuteOne(const TranslationRequest& req,
         return res;
     }
 
-    const std::wstring jsonBody = BuildRequestBody(req, config_.model);
+    std::optional<std::wstring_view> reasoningEffortOpt;
+    if (config_.modelParams.reasoningEffort.has_value()) {
+        reasoningEffortOpt = *config_.modelParams.reasoningEffort;
+    } else if (config_.reasoningEffort.has_value()) {
+        reasoningEffortOpt = *config_.reasoningEffort;
+    }
+
+    const ModelCapabilities caps = GetModelCapabilities(ProviderId::OpenAI, config_.model);
+    const bool useStreaming = config_.stream && caps.SupportsStreaming();
+
+    const std::wstring jsonBody = BuildRequestBody(req, config_.model, useStreaming,
+                                                   reasoningEffortOpt, &config_.modelParams);
     const std::string utf8Body = utf::ToUtf8(jsonBody);
 
     int attempts = 0;
@@ -429,14 +803,35 @@ TranslationResult OpenAIProvider::ExecuteOne(const TranslationRequest& req,
         DWORD statusCode = 0;
         std::wstring responseBody;
         std::wstring httpError;
+        RequestTelemetry telemetry;
 
         const auto tStart = std::chrono::steady_clock::now();
-        const bool httpOk = PerformHttpRequest(config_.endpoint, config_.apiKey, utf8Body,
-                                               config_.timeoutMs, statusCode, responseBody, httpError);
-        const auto tEnd = std::chrono::steady_clock::now();
-        const auto latencyMs = std::chrono::duration_cast<std::chrono::milliseconds>(tEnd - tStart).count();
+        bool httpOk = false;
+
+        if (useStreaming) {
+            httpOk = PerformHttpStreamingRequest(config_.endpoint, config_.apiKey, utf8Body,
+                                                 config_.timeoutMs, cancelled, telemetry,
+                                                 statusCode, responseBody, httpError);
+        } else {
+            httpOk = PerformHttpRequest(config_.endpoint, config_.apiKey, utf8Body,
+                                        config_.timeoutMs, statusCode, responseBody, httpError);
+            const auto tEnd = std::chrono::steady_clock::now();
+            telemetry.completionTimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(tEnd - tStart).count();
+            telemetry.streamed = false;
+        }
+
+        if (cancelled && cancelled->load()) {
+            res.ok = false;
+            res.error = L"Request cancelled";
+            return res;
+        }
 
         if (!httpOk) {
+            if (httpError == L"Request cancelled") {
+                res.ok = false;
+                res.error = L"Request cancelled";
+                return res;
+            }
             Logger::Instance().Warn(cat::Translation, L"OpenAI HTTP error (attempt {}/{}): {}",
                                     attempts, maxAttempts, httpError);
             if (attempts < maxAttempts) {
@@ -450,23 +845,40 @@ TranslationResult OpenAIProvider::ExecuteOne(const TranslationRequest& req,
         }
 
         if (statusCode == 200) {
-            std::wstring translated, parseError;
-            if (ParseResponseBody(responseBody, translated, parseError)) {
-                res.ok = true;
-                res.text = std::move(translated);
-                Logger::Instance().Info(cat::Translation, L"OpenAI translation completed in {} ms (len={})",
-                                        latencyMs, res.text.size());
-                return res;
+            if (config_.stream) {
+                if (!responseBody.empty()) {
+                    res.ok = true;
+                    res.text = std::move(responseBody);
+                    if (telemetry.firstTokenTimeMs > 0) {
+                        Logger::Instance().Info(cat::Translation,
+                            L"OpenAI translation completed in {} ms (TTFT={} ms, len={})",
+                            telemetry.completionTimeMs, telemetry.firstTokenTimeMs, res.text.size());
+                    } else {
+                        Logger::Instance().Info(cat::Translation,
+                            L"OpenAI translation completed in {} ms (len={})",
+                            telemetry.completionTimeMs, res.text.size());
+                    }
+                    return res;
+                }
+            } else {
+                std::wstring translated, parseError;
+                if (ParseResponseBody(responseBody, translated, parseError)) {
+                    res.ok = true;
+                    res.text = std::move(translated);
+                    Logger::Instance().Info(cat::Translation, L"OpenAI translation completed in {} ms (len={})",
+                                            telemetry.completionTimeMs, res.text.size());
+                    return res;
+                }
             }
             res.ok = false;
             res.error = L"Failed to parse OpenAI response";
-            res.errorDetail = parseError;
+            res.errorDetail = httpError.empty() ? L"Empty or incomplete response" : httpError;
             return res;
         }
 
         // Handle error status codes:
         Logger::Instance().Warn(cat::Translation, L"OpenAI status {} in {} ms (attempt {}/{})",
-                                statusCode, latencyMs, attempts, maxAttempts);
+                                statusCode, telemetry.completionTimeMs, attempts, maxAttempts);
 
         // Parse detailed message if provided by API:
         std::wstring parsedText, parsedError;

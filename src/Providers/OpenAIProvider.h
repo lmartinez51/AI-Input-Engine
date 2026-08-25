@@ -16,8 +16,25 @@ struct OpenAIConfig {
     std::wstring model = L"gpt-5.6-luna";
     std::wstring apiKey; // supplied at runtime; never logged
     ModelParameters modelParams;
+    bool stream = true;
+    std::optional<std::wstring> reasoningEffort; // L"none", L"low", L"medium"
     int timeoutMs = 30000;
     int maxRetries = 2;
+};
+
+struct SseEvent {
+    std::wstring eventType;
+    std::wstring data;
+};
+
+struct RequestTelemetry {
+    int64_t requestStartTimeMs = 0;
+    int64_t firstTokenTimeMs = 0; // TTFT (ms from request start)
+    int64_t completionTimeMs = 0; // Total latency (ms from request start)
+    size_t outputLength = 0;
+    bool streamed = false;
+    bool cancelled = false;
+    bool completed = false;
 };
 
 // OpenAI Responses API provider.
@@ -27,6 +44,7 @@ struct OpenAIConfig {
 // - per-request cancellation + CancelAll()
 // - timeouts, retry with backoff on 429/5xx, structured error parsing
 // - defensive multi-tier response parser (output_text, output[], choices[])
+// - Responses API Server-Sent Events (SSE) streaming with TTFT telemetry
 // - API key is never logged (redaction in Logging + careful error messages)
 class OpenAIProvider : public ITranslationProvider {
 public:
@@ -44,10 +62,20 @@ public:
     void Translate(TranslationRequest request, TranslationCallback callback) override;
 
     // Builds the JSON request body using the Responses API schema. Exposed for tests.
-    static std::wstring BuildRequestBody(const TranslationRequest& request, std::wstring_view model);
+    static std::wstring BuildRequestBody(const TranslationRequest& request, std::wstring_view model,
+                                         bool stream = false,
+                                         std::optional<std::wstring_view> reasoningEffort = std::nullopt,
+                                         const ModelParameters* params = nullptr);
 
-    // Parses a response body. Exposed for tests. Returns false and fills `error` on malformed payloads.
+    // Parses a non-streaming response body. Exposed for tests. Returns false and fills `error` on malformed payloads.
     static bool ParseResponseBody(std::wstring_view body, std::wstring& outText, std::wstring& error);
+
+    // Stateful SSE chunk parser. Extracts complete events from chunked stream input. Exposed for tests.
+    static void ParseSseChunk(std::string_view chunk, std::string& buffer, std::vector<SseEvent>& outEvents);
+
+    // Processes a single Responses API SSE event. Exposed for tests.
+    static bool ProcessSseEvent(const SseEvent& event, std::wstring& inOutAccumulatedText,
+                                std::wstring& inOutDoneText, bool& outCompleted, std::wstring& outError);
 
     // Performs one synchronous translation request to verify endpoint/model/key connectivity.
     // Used by Settings "Test Connection" and the CLI diagnostic tool. Never logs the key.

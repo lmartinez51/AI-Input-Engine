@@ -19,6 +19,9 @@ std::wstring BuildTransformationInstructions(TransformOperation operation,
 // Convenience overload accepting a TranslationRequest.
 std::wstring BuildInstructionsForRequest(const TranslationRequest& request);
 
+// Formats the user message payload with optional context in a provider-neutral standard.
+std::wstring FormatUserPayload(const TranslationRequest& request);
+
 // Legacy backward-compatible overloads.
 std::wstring BuildTranslationInstructions(std::wstring_view sourceLang,
                                           std::wstring_view targetLang,

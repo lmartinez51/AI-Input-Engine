@@ -29,11 +29,13 @@ constexpr UINT kTrayIconId = 1;
 constexpr int kHotkeyToggle = 1;
 constexpr int kHotkeySwap = 2;
 constexpr int kHotkeyDiagnostics = 3;
+constexpr int kHotkeySmartPaste = 4;
 constexpr UINT kMenuToggle = 1001;
 constexpr UINT kMenuSwap = 1002;
 constexpr UINT kMenuSettings = 1003;
 constexpr UINT kMenuDiagnostics = 1004;
 constexpr UINT kMenuExit = 1005;
+constexpr UINT kMenuSmartPaste = 1006;
 
 enum class MenuItemType {
     Normal,
@@ -404,6 +406,12 @@ void TrayApp::OnDiagnosticsHotkey() {
     ShowDiagnostics();
 }
 
+void TrayApp::OnSmartPasteHotkey() {
+    if (smartPaste_) {
+        smartPaste_->Trigger();
+    }
+}
+
 void TrayApp::ApplyConfig() {
     const AppConfig& cfg = config_.Get();
 
@@ -420,6 +428,7 @@ void TrayApp::ApplyConfig() {
         pipeline_ = std::make_shared<TranslationPipeline>(
             ProviderFactory::Create(cfg), cache_, cfg.requestTimeoutMs);
         engine_ = std::make_shared<InputEngine>(dispatcher_, backend_, pipeline_, logger_);
+        smartPaste_ = std::make_shared<SmartPasteManager>(pipeline_, status_, &config_, dispatcher_);
     }
 
     RebuildProvider();
@@ -465,12 +474,18 @@ void TrayApp::RegisterHotkeys() {
                         cfg.hotkeyDiagnostics.vk)) {
         Logger::Instance().Warn(cat::Ui, L"RegisterHotKey diagnostics failed: {}", GetLastError());
     }
+    if (cfg.smartPasteEnabled && cfg.hotkeySmartPaste.IsValid() &&
+        !RegisterHotKey(hwnd_, kHotkeySmartPaste, cfg.hotkeySmartPaste.modifiers,
+                        cfg.hotkeySmartPaste.vk)) {
+        Logger::Instance().Warn(cat::Ui, L"RegisterHotKey smart paste failed: {}", GetLastError());
+    }
 }
 
 void TrayApp::UnregisterHotkeys() {
     UnregisterHotKey(hwnd_, kHotkeyToggle);
     UnregisterHotKey(hwnd_, kHotkeySwap);
     UnregisterHotKey(hwnd_, kHotkeyDiagnostics);
+    UnregisterHotKey(hwnd_, kHotkeySmartPaste);
 }
 
 void TrayApp::UpdateTrayMenu() {
@@ -565,6 +580,16 @@ void TrayApp::UpdateTrayMenu() {
     provItem.text = provSummary;
     auto* pProv = addItem(std::move(provItem));
     AppendMenuW(menu, MF_OWNERDRAW | MF_GRAYED, 0, reinterpret_cast<LPCWSTR>(pProv));
+
+    // 5.5 Smart Paste state
+    ModernMenuItem pasteItem;
+    pasteItem.type = MenuItemType::Header;
+    pasteItem.disabled = true;
+    pasteItem.glyph = L"\u29C9"; // ⧉
+    pasteItem.shortcut = FormatHotkey(cfg.hotkeySmartPaste);
+    pasteItem.text = cfg.smartPasteEnabled ? L"Smart Paste: Enabled" : L"Smart Paste: Disabled";
+    auto* pPaste = addItem(std::move(pasteItem));
+    AppendMenuW(menu, MF_OWNERDRAW | MF_GRAYED, 0, reinterpret_cast<LPCWSTR>(pPaste));
 
     // Separator
     ModernMenuItem sep2;
@@ -728,6 +753,9 @@ LRESULT CALLBACK TrayApp::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 break;
             case kHotkeyDiagnostics:
                 self->OnDiagnosticsHotkey();
+                break;
+            case kHotkeySmartPaste:
+                self->OnSmartPasteHotkey();
                 break;
             default:
                 break;

@@ -13,7 +13,7 @@ namespace aiie {
 
 struct GeminiConfig {
     std::wstring endpoint = L"https://generativelanguage.googleapis.com/v1beta";
-    std::wstring model = L"gemini-3.6-flash";
+    std::wstring model = L"gemini-3.7-flash";
     std::wstring apiKey; // supplied by the user at runtime; never logged
     ModelParameters modelParams;
     int timeoutMs = 30000;
@@ -77,6 +77,7 @@ private:
     std::mutex mutex_;
     std::condition_variable cv_;
     std::deque<Pending> queue_;
+    std::shared_ptr<std::atomic<bool>> activeCancelled_;
     std::atomic<bool> running_{true};
     std::atomic<bool> shutdown_{false};
 

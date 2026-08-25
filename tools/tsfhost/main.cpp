@@ -56,6 +56,9 @@ struct RecordingStore : public ITextStoreACP, public ITfContextOwnerCompositionS
     bool compositionStarted = false;
     bool compositionEnded = false;
     std::wstring compositionText;
+    uint64_t totalCharsWritten = 0;
+    uint64_t totalCharsDeleted = 0;
+    uint64_t totalSetTextCalls = 0;
 
     // --- IUnknown ---
     STDMETHODIMP QueryInterface(REFIID riid, void** ppvObj) override {
@@ -229,16 +232,25 @@ struct RecordingStore : public ITextStoreACP, public ITfContextOwnerCompositionS
     STDMETHODIMP SetText(DWORD dwFlags, LONG acpStart, LONG acpEnd, const WCHAR* pchText,
                          ULONG cch, TS_TEXTCHANGE* pChange) override {
         ++nSetText;
-        std::printf("[host] store SetText #%u [%ld,%ld) += \"%*ls\" (sink=%s)\n", nSetText, acpStart,
-                    acpEnd, cch, pchText, sink ? "set" : "null");
+        ++totalSetTextCalls;
+        totalCharsWritten += cch;
+        const LONG end = std::min(acpEnd == -1 ? static_cast<LONG>(text.size()) : acpEnd,
+                                  static_cast<LONG>(text.size()));
+        const LONG oldEnd = end;
+        if (end > acpStart && (cch == 0 || pchText == nullptr)) {
+            totalCharsDeleted += static_cast<uint64_t>(end - acpStart);
+        }
+        std::printf("[host] store SetText #%u [%ld,%ld) += \"%*ls\" (cch=%lu, sink=%s)\n", nSetText, acpStart,
+                    acpEnd, cch, (cch > 0 && pchText) ? pchText : L"", cch, sink ? "set" : "null");
         (void)dwFlags;
         if (acpStart < 0 || acpStart > static_cast<LONG>(text.size())) {
             return TS_E_INVALIDPOS;
         }
-        const LONG end = std::min(acpEnd == -1 ? static_cast<LONG>(text.size()) : acpEnd,
-                                  static_cast<LONG>(text.size()));
-        const LONG oldEnd = end;
-        text.replace(acpStart, end - acpStart, pchText, cch);
+        if (cch > 0 && pchText != nullptr) {
+            text.replace(acpStart, end - acpStart, pchText, cch);
+        } else if (end > acpStart) {
+            text.erase(acpStart, end - acpStart);
+        }
         selStart = selEnd = acpStart + static_cast<LONG>(cch);
         if (pChange) {
             pChange->acpStart = acpStart;
@@ -422,6 +434,7 @@ int wmain(int argc, wchar_t** argv) {
     std::wstring mode = L"mock";
     std::wstring text = L"hola mundo";
     std::wstring expected = L"hello world";
+    std::wstring scenario = L"append";
     DWORD timeoutMs = 30000;
 
     for (int i = 1; i < argc; ++i) {
@@ -436,10 +449,12 @@ int wmain(int argc, wchar_t** argv) {
             text = argv[++i];
         } else if (arg == L"--expected" && i + 1 < argc) {
             expected = argv[++i];
+        } else if (arg == L"--scenario" && i + 1 < argc) {
+            scenario = argv[++i];
         } else if (arg == L"--timeout" && i + 1 < argc) {
             timeoutMs = static_cast<DWORD>(_wtoi(argv[++i]));
         } else {
-            std::wprintf(L"Usage: aiie_tsfhost [--mock|--gemini|--openai] [--text <sentence>] "
+            std::wprintf(L"Usage: aiie_tsfhost [--mock|--gemini|--openai] [--scenario <append|backspace|mixed|all>] [--text <sentence>] "
                          L"[--expected <translation>] [--timeout <ms>]\n");
             return 2;
         }
@@ -668,14 +683,14 @@ int wmain(int argc, wchar_t** argv) {
         goto cleanup;
     }
 
-    GetKeyboardState(state);
     {
-        int eatenCount = 0;
-        for (const wchar_t c : text) {
+        GetKeyboardState(state);
+
+        auto feedChar = [&](wchar_t c) -> bool {
             SHORT vkShort = VkKeyScanW(c);
             if (vkShort == -1) {
                 std::printf("FAIL: no VK for %lc\n", c);
-                goto cleanup;
+                return false;
             }
             const BYTE vk = static_cast<BYTE>(vkShort & 0xFF);
             const bool shift = (vkShort & 0x100) != 0;
@@ -692,19 +707,59 @@ int wmain(int argc, wchar_t** argv) {
             const LPARAM lParam = (static_cast<LPARAM>(scan) << 16) | (shift ? (1 << 24) : 0) | 1;
             BOOL eaten = FALSE;
             const HRESULT hrKey = pKeySink->OnKeyDown(pContext, vk, lParam, &eaten);
-            if (SUCCEEDED(hrKey) && eaten) {
-                ++eatenCount;
-            } else {
-                std::printf("[host] key %lc NOT eaten (hr=0x%08X eaten=%d)\n", c, hrKey,
-                            eaten ? 1 : 0);
-            }
             PumpMessages(15);
-            // Let ToUnicodeEx see the original layout state between keys.
             SetKeyboardState(state);
+            return SUCCEEDED(hrKey) && eaten;
+        };
+
+        auto feedBackspace = [&]() -> bool {
+            const BYTE vk = VK_BACK;
+            BYTE newState[256];
+            memcpy(newState, state, sizeof(state));
+            SetKeyboardState(newState);
+            const UINT scan = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+            const LPARAM lParam = (static_cast<LPARAM>(scan) << 16) | 1;
+            BOOL eaten = FALSE;
+            const HRESULT hrKey = pKeySink->OnKeyDown(pContext, vk, lParam, &eaten);
+            PumpMessages(15);
+            SetKeyboardState(state);
+            return SUCCEEDED(hrKey) && eaten;
+        };
+
+        int eatenCount = 0;
+        if (scenario == L"backspace") {
+            std::printf("[host] running BACKSPACE scenario: typing \"hola mundo\", then 5 backspaces\n");
+            for (const wchar_t c : std::wstring(L"hola mundo")) {
+                if (feedChar(c)) ++eatenCount;
+            }
+            for (int b = 0; b < 5; ++b) {
+                if (feedBackspace()) ++eatenCount;
+            }
+            if (expected == L"hello world") {
+                expected = L"hello ";
+            }
+        } else if (scenario == L"mixed") {
+            std::printf("[host] running MIXED scenario: typing \"hola mundo\", 5 backspaces, then \"hoy\"\n");
+            for (const wchar_t c : std::wstring(L"hola mundo")) {
+                if (feedChar(c)) ++eatenCount;
+            }
+            for (int b = 0; b < 5; ++b) {
+                if (feedBackspace()) ++eatenCount;
+            }
+            for (const wchar_t c : std::wstring(L"hoy")) {
+                if (feedChar(c)) ++eatenCount;
+            }
+            if (expected == L"hello world") {
+                expected = L"hello today";
+            }
+        } else {
+            // Default append scenario
+            for (const wchar_t c : text) {
+                if (feedChar(c)) ++eatenCount;
+            }
         }
 
-        SetKeyboardState(state);
-        std::printf("[host] %d/%zu keystrokes eaten by the TIP\n", eatenCount, text.size());
+        std::printf("[host] %d keystrokes eaten by the TIP\n", eatenCount);
 
         if (eatenCount == 0) {
             std::printf("FAIL: the TIP did not receive any keystroke\n");
@@ -794,6 +849,12 @@ int wmain(int argc, wchar_t** argv) {
         std::printf("Document text (edit control): \"%ls\"\n", docText.c_str());
         std::printf("Document text (text store): \"%ls\"\n", owner->ReadDoc().c_str());
         std::printf("Document text (TSF readback): \"%ls\"\n", tsfText.c_str());
+
+        std::printf("\n================ TSF PERFORMANCE METRICS ================\n");
+        std::printf("Total SetText calls made:     %llu\n", owner->totalSetTextCalls);
+        std::printf("Total UTF-16 chars written:   %llu\n", owner->totalCharsWritten);
+        std::printf("Total UTF-16 chars deleted:   %llu\n", owner->totalCharsDeleted);
+        std::printf("=========================================================\n\n");
 
         if (committed == expected || docText == expected || owner->ReadDoc() == expected ||
             tsfText == expected) {
