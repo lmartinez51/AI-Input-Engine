@@ -3,7 +3,7 @@
 ## Prerequisites
 
 - Windows 10/11 x64.
-- Visual Studio Build Tools with "Desktop development with C++" (MSVC 14.51+).
+- Visual Studio Build Tools with "Desktop development with C++" (MSVC 14.51+ or 2022+).
 - CMake 3.24+.
 
 ## Build
@@ -27,27 +27,28 @@ third-party dependencies (custom JSON parser, custom test harness).
 ## Tests
 
 ```powershell
-# unit tests + TSF registration check (safe, no windows)
+# unit tests + simulation benchmarks (headless, safe, fast)
 .\scripts\run_tests.ps1 -Config Debug
+
+# or run the executable directly
+.\build\Debug\aiie_unit_tests.exe
 
 # + Notepad integration test (opens windows and steals focus)
 .\scripts\run_tests.ps1 -Config Debug -WithIntegration
 ```
 
-### Unit tests
+### Unit & Simulation tests
 
-`aiie_unit_tests.exe` — 76 tests, ~247 checks, no external dependencies.
+`aiie_unit_tests.exe` — 277 tests, ~1206 checks, no external dependencies.
 Sources in `tests/unit/`, harness in `tests/mini_test.h`.
 
-Notes:
-
-- The harness installs a crash filter that prints the crashing module + RVA
-  (`CRASH: code=... at ... in <module> +0x...`) — use `dumpbin /disasm` or a
-  debugger with the matching PDB to resolve the offset.
-- Provider tests use artificial delays and **must wait for every in-flight
-  callback** before the test returns (see the use-after-free history in
-  DesignDecisions.md). `FakeProvider`/`MockProvider` workers capture only a
-  shared cancellation flag, never `this`.
+Includes:
+- **Core State Machine & Hook Tests**: Buffer version guards, backspace surrogate pair handling, terminator immediate submissions.
+- **Provider & SSE Parser Tests**: Chunk accumulation, TTFT measurement, error events, reasoning effort serialization.
+- **Smart Paste Tests**: Sequence snapshot verification, target window mismatch aborts, clipboard restoration.
+- **Diagnostics Window Tests**: Control creation, log ring buffer search/filtering, selection preservation.
+- **PCHP Statistical Simulations** (`speculative_phase2_sim.cpp`): Multi-seed human typing behavior distribution models and hit-rate audits.
+- **Trigger Optimization Matrix** (`trigger_optimizer_sim.cpp`): 12-scenario typing benchmark verifying up to 77% request reduction.
 
 ### Integration test
 
@@ -82,17 +83,23 @@ the current user. `run_tests.ps1` warns (not fails) when unregistered unless
 - Secrets (API keys) must never be logged or committed; use
   `Logger::Redact` when logging provider data.
 
-## Useful commands
+## Useful CLI Tools
 
 ```powershell
-# resolve a crash RVA to a function
-dumpbin /disasm build\Debug\aiie_unit_tests.exe > disasm.txt   # then search the offset
+# Live OpenAI smoke test matrix (responses API, streaming, reasoning)
+.\build\Release\aiie_openaitest.exe --matrix
 
-# register/unregister/verify TSF
+# Live Gemini diagnostic probe
+.\build\Release\aiie_geminitest.exe
+
+# Register/unregister/verify TSF text service
 .\build\Release\aiie_tsfreg.exe --register
 .\build\Release\aiie_tsfreg.exe --verify
 .\build\Release\aiie_tsfreg.exe --unregister
 
-# log location (config + logs)
+# Package portable distribution zip
+.\tools\package_dist.ps1
+
+# Application config and logs location
 Get-ChildItem $env:APPDATA\AIInputEngine
 ```

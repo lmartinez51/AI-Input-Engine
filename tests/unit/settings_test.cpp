@@ -1,6 +1,7 @@
 #include "mini_test.h"
 
 #include "Configuration/AppConfig.h"
+#include "Configuration/ConfigStore.h"
 #include "Configuration/ModelCapabilities.h"
 #include "UI/SettingsDialog.h"
 
@@ -554,6 +555,124 @@ TEST(settings_dialog_compact_advanced_layout) {
 
     // Verify Action buttons (OK/Cancel) are placed below the advanced grid
     CHECK(rcOk.top > rcTopK.top);
+
+    CloseAndJoin(hwnd, uiThread);
+}
+
+TEST(speculative_config_defaults_and_roundtrip) {
+    // 1. Default config must have speculativeTranslationEnabled == false
+    AppConfig defaultConfig;
+    CHECK(!defaultConfig.speculativeTranslationEnabled);
+    CHECK_EQ(defaultConfig.speculativeDebounceMs, 150);
+    CHECK_EQ(defaultConfig.speculativeMinChars, 5);
+
+    // 2. Deserialization of empty/legacy JSON must default to false
+    const auto tempDir = std::filesystem::temp_directory_path() / L"aiie_test_spec_cfg";
+    std::filesystem::create_directories(tempDir);
+    const auto tempPath = tempDir / L"config.json";
+
+    // Write empty JSON
+    {
+        HANDLE hFile = CreateFileW(tempPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            const char* emptyJson = "{}";
+            DWORD written = 0;
+            WriteFile(hFile, emptyJson, static_cast<DWORD>(strlen(emptyJson)), &written, nullptr);
+            CloseHandle(hFile);
+        }
+    }
+
+    ConfigStore legacyStore(tempPath);
+    CHECK(legacyStore.Load());
+    CHECK(!legacyStore.Get().speculativeTranslationEnabled);
+    CHECK_EQ(legacyStore.Get().speculativeDebounceMs, 150);
+    CHECK_EQ(legacyStore.Get().speculativeMinChars, 5);
+
+    // 3. Round-trip save and load when explicitly enabled
+    AppConfig enabledConfig;
+    enabledConfig.provider = ProviderId::OpenAI;
+    enabledConfig.model = L"gpt-5.6-luna";
+    enabledConfig.speculativeTranslationEnabled = true;
+    enabledConfig.speculativeDebounceMs = 200;
+    enabledConfig.speculativeMinChars = 6;
+
+    ConfigStore saveStore(tempPath);
+    saveStore.Set(enabledConfig);
+    CHECK(saveStore.Save());
+
+    ConfigStore loadStore(tempPath);
+    CHECK(loadStore.Load());
+    CHECK(loadStore.Get().speculativeTranslationEnabled);
+    CHECK_EQ(loadStore.Get().speculativeDebounceMs, 200);
+    CHECK_EQ(loadStore.Get().speculativeMinChars, 6);
+
+    // 4. Round-trip save and load when explicitly disabled
+    enabledConfig.speculativeTranslationEnabled = false;
+    saveStore.Set(enabledConfig);
+    CHECK(saveStore.Save());
+
+    ConfigStore loadStoreDisabled(tempPath);
+    CHECK(loadStoreDisabled.Load());
+    CHECK(!loadStoreDisabled.Get().speculativeTranslationEnabled);
+
+    std::filesystem::remove_all(tempDir);
+}
+
+TEST(settings_dialog_speculative_control_state_and_provider_gating) {
+    std::thread uiThread([] {
+        AppConfig cfg;
+        cfg.provider = ProviderId::Gemini;
+        cfg.model = L"gemini-2.5-flash";
+        cfg.speculativeTranslationEnabled = false;
+        ShowSettingsDialog(nullptr, cfg);
+    });
+
+    HWND hwnd = WaitForDialog();
+    CHECK(hwnd != nullptr);
+    if (!hwnd) {
+        if (uiThread.joinable()) uiThread.detach();
+        return;
+    }
+
+    HWND toggleBtn = GetDlgItem(hwnd, 23); // kAdvancedToggle
+    HWND specChk = GetDlgItem(hwnd, 33);   // kSpeculativeTranslation
+    HWND specNote = GetDlgItem(hwnd, 34);  // kSpeculativeNote
+    HWND provCombo = GetDlgItem(hwnd, 11); // kProvider
+
+    CHECK(toggleBtn != nullptr);
+    CHECK(specChk != nullptr);
+    CHECK(specNote != nullptr);
+    CHECK(provCombo != nullptr);
+
+    // Expand Advanced Settings
+    SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(23, BN_CLICKED), reinterpret_cast<LPARAM>(toggleBtn));
+    CHECK_EQ(IsWindowVisible(specChk), TRUE);
+    CHECK_EQ(IsWindowVisible(specNote), TRUE);
+
+    // 1. Under Gemini provider, checkbox must be DISABLED (grayed out)
+    CHECK_EQ(IsWindowEnabled(specChk), FALSE);
+    CHECK_EQ(IsDlgButtonChecked(hwnd, 33), BST_UNCHECKED);
+    wchar_t noteBuf[256] = {};
+    GetWindowTextW(specNote, noteBuf, 256);
+    CHECK(wcsstr(noteBuf, L"only available for OpenAI") != nullptr);
+
+    // 2. Switch provider to OpenAI (index 2)
+    ComboBox_SetCurSel(provCombo, 2);
+    SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(11, CBN_SELCHANGE), reinterpret_cast<LPARAM>(provCombo));
+
+    // Under OpenAI provider (default model gpt-5.6-luna), checkbox must be ENABLED
+    CHECK_EQ(IsWindowEnabled(specChk), TRUE);
+    GetWindowTextW(specNote, noteBuf, 256);
+    CHECK(wcsstr(noteBuf, L"Translate in the background") != nullptr);
+
+    // 3. User checks the checkbox
+    CheckDlgButton(hwnd, 33, BST_CHECKED);
+    CHECK_EQ(IsDlgButtonChecked(hwnd, 33), BST_CHECKED);
+
+    // 4. Switch provider back to Mock (index 0) -> checkbox becomes disabled
+    ComboBox_SetCurSel(provCombo, 0);
+    SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(11, CBN_SELCHANGE), reinterpret_cast<LPARAM>(provCombo));
+    CHECK_EQ(IsWindowEnabled(specChk), FALSE);
 
     CloseAndJoin(hwnd, uiThread);
 }

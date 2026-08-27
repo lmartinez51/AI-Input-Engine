@@ -19,11 +19,14 @@ Output binaries land in `build\Release\` (or `build\Debug\`):
 
 | Binary | Purpose |
 |---|---|
-| `AIInputEngine.exe` | Tray host (hook mode + UI) |
-| `AIInputEngineTSF.dll` | TSF text service (IME mode) |
+| `AIInputEngine.exe` | Tray host (hook mode, Smart Paste, settings & diagnostics UI) |
+| `AIInputEngineTSF.dll` | TSF text service (native IME mode) |
 | `aiie_tsfreg.exe` | TSF registration/verification tool |
-| `aiie_unit_tests.exe` | Unit tests |
-| `aiie_integration_test.exe` | Notepad end-to-end test |
+| `aiie_unit_tests.exe` | Comprehensive unit & simulation test suite (277 tests) |
+| `aiie_openaitest.exe` | Live OpenAI connectivity, streaming, and model validation tool |
+| `aiie_geminitest.exe` | Live Gemini diagnostic tool |
+| `aiie_tsfhost.exe` | TSF host proof tool verifying composition -> transformation -> commit |
+| `aiie_integration_test.exe` | Notepad end-to-end hook integration test |
 
 ## Run in hook mode (no registration)
 
@@ -57,32 +60,33 @@ provider (offline dictionary, no API key needed). Type a sentence ending in
   registration only affects the user that registered it.
 - Verify registration: `aiie_tsfreg.exe --verify`.
 
-## Configure the Gemini provider (optional)
+## Configure Providers (OpenAI & Gemini)
 
-The mock provider works offline and needs no setup. For real translation:
+The mock provider works offline and needs no setup. For real AI translation & rewrite:
 
-1. Get an API key from Google AI Studio.
-2. Open Settings (tray menu) and select provider "Gemini", enter the key, or
-   set the `GEMINI_API_KEY` environment variable.
-3. Save; the provider is rebuilt live without restarting.
+1. **OpenAI**: Enter your API key in Settings (stored securely in Windows Credential Manager DPAPI) or set `OPENAI_API_KEY`. Supports `gpt-5.6-luna`, `gpt-5.4`, `gpt-4o`, `gpt-4o-mini`, `o1`, `o3-mini`.
+2. **Gemini**: Enter your API key in Settings or set `GEMINI_API_KEY`. Supports `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash-lite`.
+3. Save; the active provider is rebuilt live without restarting.
 
-## Configuration file
+## Configuration file & Credential Storage
 
-Settings are stored in `%APPDATA%\AIInputEngine\config.json`. Values: provider,
-model, endpoint, API key, source/target languages, debounce milliseconds,
-minimum/maximum buffer characters, hotkeys, enabled state. The file is
-JSON UTF-8; corrupt values fall back to defaults and are reported.
+- Settings are stored in `%APPDATA%\AIInputEngine\config.json`. Values: provider,
+  model, endpoint, source/target languages, tone profile, debounce milliseconds,
+  minimum/maximum buffer characters, hotkeys, speculative execution enabled state.
+- API keys are encrypted via **Windows DPAPI** and kept in Windows Credential Manager.
 
-## Hotkeys
+## Hotkeys (Configurable)
 
 | Action | Default |
 |---|---|
-| Toggle AI Input | `Ctrl+Alt+Space` |
-| Swap source/target | `Ctrl+Alt+S` |
-| Diagnostics | `Ctrl+Alt+D` |
+| Toggle AI Input | `Ctrl+Shift+Space` |
+| Smart Paste | `Ctrl+Shift+V` |
+| Swap source/target | `Ctrl+Shift+S` |
+| Diagnostics Window | `Ctrl+Shift+D` |
 
 ## Uninstall
 
 1. Exit the tray app (right-click tray icon -> Exit).
 2. `aiie_tsfreg.exe --unregister` if TSF mode was used.
 3. Delete `%APPDATA%\AIInputEngine\` (config and logs) and the build folder.
+4. Remove stored credentials via Windows Credential Manager if desired.

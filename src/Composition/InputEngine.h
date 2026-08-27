@@ -4,6 +4,7 @@
 #include "Core/Dispatcher.h"
 #include "Core/Logging.h"
 #include "Translation/Debouncer.h"
+#include "Translation/SpeculativeTranslationManager.h"
 #include "Translation/TranslationPipeline.h"
 #include "Translation/TranslationTypes.h"
 
@@ -66,25 +67,46 @@ public:
     // --- Input thread API (keystroke events) ---
     void HandleCharacter(wchar_t c);
     void HandleBackspace();
-    void HandleTerminator(wchar_t c); // . ! ? — immediate request
-    void HandleCommitKey();           // Enter / navigation / control combos
+    void HandleTerminator(wchar_t c); // . ! ? — immediate strong request
+    void HandleShiftEnter();          // Shift+Enter — atomic strong commit with trailing newline
+    bool CanHandleShiftEnter() const; // Returns true if buffer >= kMinMeaningfulChars
+    void HandleCommitKey();           // Enter / navigation / control combos (preserves host action)
     void SetEnabled(bool enabled);
     void FlushBuffer();               // commit current buffer as-is
     void CancelActiveCompositionForFocusChange(); // target application changed; cancel in-flight request & composition
 
     // --- Called from any thread ---
     void OnDebounceFired();
+    void OnSpeculativeDebounceFired();
     void OnTranslationResult(int64_t requestId, TranslationResult result);
 
     // --- Queries ---
     EngineStatus Status() const;
     std::wstring Buffer() const; // for diagnostics/tests
     int64_t InflightRequestId() const { return inflightRequestId_; }
+    CommitAuthority InflightCommitAuthority() const { return inflightCommitAuthority_; }
+    std::shared_ptr<SpeculativeTranslationManager> SpeculativeManager() const { return speculativeManager_; }
 
 private:
-    bool SubmitRequest();
+    bool SubmitRequest(CommitAuthority authority, bool isTerminalFastPath = false, bool appendTrailingNewline = false);
     void ApplyReplacement(std::wstring replacement, size_t sourceLength);
     void UpdateState(EngineState state, std::wstring_view message);
+    TransformationIdentity CurrentIdentity() const;
+
+    static bool IsTerminalPunctuation(wchar_t c) {
+        return (c == L'.' || c == L'!' || c == L'?' || c == L'\n');
+    }
+
+    static bool IsClausePunctuation(wchar_t c) {
+        return (c == L',' || c == L';' || c == L':');
+    }
+
+    // Internal Adaptive Trigger thresholds (Policy C)
+    static constexpr int kMinMeaningfulChars = 3;        // Safety floor for LLM request eligibility
+    static constexpr int kClauseDebounceMs = 600;         // Debounce after clause punctuation (, ; :)
+    static constexpr int kWordBoundaryDebounceMs = 750;   // Debounce after space / tab (from simulation sweep)
+    static constexpr int kMidWordDebounceMs = 1200;       // Extended idle threshold while typing mid-word
+    static constexpr int kRequestCooldownMs = 800;        // Minimum interval between non-terminal requests
 
     // Recursive: synchronous inline callbacks (cache hits, FireNow) can
     // re-enter the engine while it already holds the lock.
@@ -94,6 +116,8 @@ private:
     std::shared_ptr<TranslationPipeline> pipeline_;
     std::shared_ptr<Logger> logger_;
     std::shared_ptr<Debouncer> debouncer_;
+    std::shared_ptr<Debouncer> speculativeDebouncer_;
+    std::shared_ptr<SpeculativeTranslationManager> speculativeManager_;
 
     AppConfig config_;
     bool enabled_ = true;
@@ -102,7 +126,10 @@ private:
     std::wstring lastCommitted_;  // previous sentence, used as translation context
     int64_t nextRequestId_ = 1;   // strictly monotonic request ID generator
     int64_t inflightRequestId_ = -1;
+    CommitAuthority inflightCommitAuthority_ = CommitAuthority::Forbidden;
+    bool inflightAppendTrailingNewline_ = false;
     std::wstring inflightSnapshot_;
+    std::chrono::steady_clock::time_point lastSubmitTime_{};
 
     EngineState state_ = EngineState::Idle;
     std::wstring lastMessage_;

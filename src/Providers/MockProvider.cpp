@@ -353,12 +353,21 @@ void MockProvider::CancelAll() {
 }
 
 void MockProvider::Translate(TranslationRequest request, TranslationCallback callback) {
+    const auto perReqCancel = request.cancellationToken;
+    if ((cancelled_ && cancelled_->load()) || (perReqCancel && perReqCancel->load())) {
+        TranslationResult r;
+        r.requestId = request.requestId;
+        r.ok = false;
+        r.error = L"cancelled";
+        callback(std::move(r));
+        return;
+    }
     if (delay_.count() > 0) {
         const auto cancelled = cancelled_;
         const auto delay = delay_;
-        std::thread([cancelled, delay, request = std::move(request), callback = std::move(callback)]() mutable {
+        std::thread([cancelled, perReqCancel, delay, request = std::move(request), callback = std::move(callback)]() mutable {
             std::this_thread::sleep_for(delay);
-            if (cancelled->load()) {
+            if ((cancelled && cancelled->load()) || (perReqCancel && perReqCancel->load())) {
                 TranslationResult r;
                 r.requestId = request.requestId;
                 r.ok = false;

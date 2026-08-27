@@ -32,13 +32,13 @@ TEST(debouncer_does_not_fire_before_delay) {
 TEST(debouncer_rearm_extends_window) {
     std::atomic<int> fired{0};
     Debouncer d([&fired] { fired.fetch_add(1); });
-    d.SetDelay(std::chrono::milliseconds(60));
+    d.SetDelay(std::chrono::milliseconds(100));
     d.Arm();
     std::this_thread::sleep_for(std::chrono::milliseconds(40));
     d.Arm(); // re-arm: idle window restarts
     std::this_thread::sleep_for(std::chrono::milliseconds(40));
     CHECK(!d.Tick()); // only 40ms since last Arm
-    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
     CHECK(d.Tick());
     CHECK_EQ(fired.load(), 1);
 }

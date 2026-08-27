@@ -218,6 +218,10 @@ AppConfig ConfigStore::FromJson(const json::Value& root) {
     c.cacheEnabled = root.get_bool(L"cacheEnabled", c.cacheEnabled);
     c.cacheMaxEntries = static_cast<int>(root.get_int(L"cacheMaxEntries", c.cacheMaxEntries));
 
+    c.speculativeTranslationEnabled = root.get_bool(L"speculativeTranslationEnabled", c.speculativeTranslationEnabled);
+    c.speculativeDebounceMs = static_cast<int>(root.get_int(L"speculativeDebounceMs", c.speculativeDebounceMs));
+    c.speculativeMinChars = static_cast<int>(root.get_int(L"speculativeMinChars", c.speculativeMinChars));
+
     // Clamp numeric fields to sane ranges
     const AppConfig def;
     auto clamp = [&def](int value, int defValue, int lo, int hi) {
@@ -229,6 +233,8 @@ AppConfig ConfigStore::FromJson(const json::Value& root) {
     c.requestTimeoutMs = clamp(c.requestTimeoutMs, def.requestTimeoutMs, 1000, 300000);
     c.maxRetries = clamp(c.maxRetries, def.maxRetries, 0, 10);
     c.cacheMaxEntries = clamp(c.cacheMaxEntries, def.cacheMaxEntries, 10, 10000);
+    c.speculativeDebounceMs = clamp(c.speculativeDebounceMs, def.speculativeDebounceMs, 20, 5000);
+    c.speculativeMinChars = clamp(c.speculativeMinChars, def.speculativeMinChars, 1, 20);
     return c;
 }
 
@@ -283,6 +289,9 @@ json::Value ConfigStore::ToJson(const AppConfig& c) {
     root.set(L"warnOnExternalSend", c.warnOnExternalSend);
     root.set(L"cacheEnabled", c.cacheEnabled);
     root.set(L"cacheMaxEntries", c.cacheMaxEntries);
+    root.set(L"speculativeTranslationEnabled", c.speculativeTranslationEnabled);
+    root.set(L"speculativeDebounceMs", c.speculativeDebounceMs);
+    root.set(L"speculativeMinChars", c.speculativeMinChars);
     return root;
 }
 

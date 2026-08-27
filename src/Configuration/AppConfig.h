@@ -114,6 +114,11 @@ struct AppConfig {
     // Cache.
     bool cacheEnabled = true;
     int cacheMaxEntries = 200;
+
+    // Speculative / Predictive Translation settings (experimental PoC, disabled by default).
+    bool speculativeTranslationEnabled = false;
+    int speculativeDebounceMs = 150;
+    int speculativeMinChars = 5;
 };
 
 } // namespace aiie

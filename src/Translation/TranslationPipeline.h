@@ -41,9 +41,22 @@ public:
     // Provider status (for UI).
     ProviderStatus Status() const;
 
-    static constexpr int64_t kMaxPending = 8;
+    // Capacity queries (for diagnostics & tests)
+    size_t PendingAllowed() const;
+    size_t PendingSpeculative() const;
+    size_t TotalPending() const;
+
+    static constexpr size_t kMaxSpeculativePending = 1;
+    static constexpr size_t kMaxAllowedPending = 4;
+    static constexpr size_t kMaxPending = kMaxSpeculativePending + kMaxAllowedPending;
 
 private:
+    struct InflightSlot {
+        int64_t id = 0;
+        CommitAuthority authority = CommitAuthority::Forbidden;
+        std::shared_ptr<std::atomic<bool>> cancellationToken;
+    };
+
     void Finish(TranslationRequest request, TranslationResult result, TranslationCallback callback);
 
     std::shared_ptr<ITranslationProvider> provider_;
@@ -51,10 +64,12 @@ private:
     int requestTimeoutMs_;
 
     std::shared_ptr<std::atomic<bool>> alive_ = std::make_shared<std::atomic<bool>>(true);
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::atomic<int64_t> nextId_{1};
     int64_t latestRequested_ = 0; // guarded by mutex_
-    size_t pending_ = 0;
+    size_t pendingAllowed_ = 0;   // guarded by mutex_
+    size_t pendingSpeculative_ = 0; // guarded by mutex_
+    std::vector<InflightSlot> inflightSlots_; // guarded by mutex_
 };
 
 } // namespace aiie

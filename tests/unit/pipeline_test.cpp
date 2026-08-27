@@ -95,10 +95,12 @@ TEST(pipeline_latest_wins_discards_stale) {
     a.text = L"aaa";
     a.sourceLanguage = L"es";
     a.targetLanguage = L"en";
+    a.commitAuthority = CommitAuthority::Allowed;
     TranslationRequest b;
     b.text = L"bbbb";
     b.sourceLanguage = L"es";
     b.targetLanguage = L"en";
+    b.commitAuthority = CommitAuthority::Allowed;
 
     const int64_t idA = pipeline.Submit(a, [&](TranslationResult r) {
         if (!r.ok && r.error == L"stale") {

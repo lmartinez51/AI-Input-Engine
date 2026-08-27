@@ -98,9 +98,9 @@ void GeminiProvider::CancelAll() {
 
 void GeminiProvider::Translate(TranslationRequest request, TranslationCallback callback) {
     Pending p;
+    p.cancelled = request.cancellationToken ? request.cancellationToken : std::make_shared<std::atomic<bool>>(false);
     p.request = std::move(request);
     p.callback = std::move(callback);
-    p.cancelled = std::make_shared<std::atomic<bool>>(false);
     {
         std::lock_guard lock(mutex_);
         queue_.push_back(std::move(p));

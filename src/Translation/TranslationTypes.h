@@ -2,10 +2,17 @@
 
 #include "Configuration/AppConfig.h"
 
+#include <atomic>
 #include <functional>
+#include <memory>
 #include <string>
 
 namespace aiie {
+
+enum class CommitAuthority {
+    Forbidden,  // Background / speculative / intermediate. NEVER allowed to touch screen.
+    Allowed     // Strong completion signal or explicit user action. Authorized to commit replacement.
+};
 
 // Immutable data describing one transformation request.
 struct TranslationRequest {
@@ -17,10 +24,14 @@ struct TranslationRequest {
     std::wstring targetLanguage;
     TranslationProfile profile = TranslationProfile::Neutral;
     std::wstring customInstructions;
+    std::optional<std::wstring> reasoningEffort;
     TransformMode mode = TransformMode::Translate; // Kept for backward compatibility
     std::wstring context;    // previous sentence / surrounding context (may be empty)
     int64_t requestId = 0;   // assigned by the pipeline
     bool useCache = true;
+    CommitAuthority commitAuthority = CommitAuthority::Forbidden;
+    bool appendTrailingNewline = false;
+    std::shared_ptr<std::atomic<bool>> cancellationToken;
 };
 
 struct TranslationResult {
@@ -31,6 +42,8 @@ struct TranslationResult {
     std::wstring detectedSource;  // "es"/"en"/... when source was "auto"
     int64_t requestId = 0;
     bool fromCache = false;
+    CommitAuthority commitAuthority = CommitAuthority::Forbidden;
+    bool appendTrailingNewline = false;
 };
 
 // Provider health / connectivity status.

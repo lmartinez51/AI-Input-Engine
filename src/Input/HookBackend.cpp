@@ -171,9 +171,15 @@ LRESULT HookBackend::OnHookEvent(int code, WPARAM wp, LPARAM lp) {
             }
 
             switch (kbd->vkCode) {
-            case VK_RETURN:
+            case VK_RETURN: {
+                const bool shift = (keyState_[VK_LSHIFT] & 0x80) || (keyState_[VK_RSHIFT] & 0x80);
+                if (shift && engine_->CanHandleShiftEnter()) {
+                    engine_->HandleShiftEnter();
+                    return 1; // Consume event: prevents host from inserting premature uncoordinated newline
+                }
                 engine_->HandleCommitKey();
                 return CallNextHookEx(nullptr, code, wp, lp);
+            }
             case VK_BACK:
                 engine_->HandleBackspace();
                 return CallNextHookEx(nullptr, code, wp, lp);

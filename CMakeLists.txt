@@ -49,6 +49,8 @@ add_library(aiie_core STATIC
     src/Translation/Debouncer.cpp
     src/Translation/TranslationPipeline.h
     src/Translation/TranslationPipeline.cpp
+    src/Translation/SpeculativeTranslationManager.h
+    src/Translation/SpeculativeTranslationManager.cpp
     src/Providers/MockProvider.h
     src/Providers/MockProvider.cpp
     src/Providers/GeminiProvider.h
@@ -129,6 +131,9 @@ add_executable(aiie_unit_tests
     tests/unit/settings_test.cpp
     tests/unit/smart_paste_test.cpp
     tests/unit/diagnostics_test.cpp
+    tests/unit/speculative_test.cpp
+    tests/unit/speculative_phase2_sim.cpp
+    tests/unit/trigger_optimizer_sim.cpp
     src/UI/SettingsDialog.h
     src/UI/SettingsDialog.cpp
     src/UI/DiagnosticsWindow.h

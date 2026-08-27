@@ -90,11 +90,18 @@ std::wstring TrimWhitespaceAndQuotes(std::wstring text) {
 
 // Performs a raw HTTPS POST request via WinHTTP and returns the response body and status code.
 bool PerformHttpRequest(const std::wstring& endpoint, const std::wstring& authBearerKey,
-                        const std::string& utf8Body, int timeoutMs, DWORD& outStatusCode,
+                        const std::string& utf8Body, int timeoutMs,
+                        const std::shared_ptr<std::atomic<bool>>& cancelled,
+                        DWORD& outStatusCode,
                         std::wstring& outResponseBody, std::wstring& outError) {
     outStatusCode = 0;
     outResponseBody.clear();
     outError.clear();
+
+    if (cancelled && cancelled->load()) {
+        outError = L"Request cancelled";
+        return false;
+    }
 
     const std::wstring host = HostFromUrl(endpoint);
     const std::wstring path = PathFromUrl(endpoint);
@@ -151,6 +158,14 @@ bool PerformHttpRequest(const std::wstring& endpoint, const std::wstring& authBe
         return false;
     }
 
+    if (cancelled && cancelled->load()) {
+        WinHttpCloseHandle(request);
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        outError = L"Request cancelled";
+        return false;
+    }
+
     DWORD statusCode = 0;
     DWORD statusSize = sizeof(statusCode);
     WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
@@ -161,6 +176,13 @@ bool PerformHttpRequest(const std::wstring& endpoint, const std::wstring& authBe
     std::string responseBytes;
     DWORD bytesAvailable = 0;
     while (WinHttpQueryDataAvailable(request, &bytesAvailable) && bytesAvailable > 0) {
+        if (cancelled && cancelled->load()) {
+            WinHttpCloseHandle(request);
+            WinHttpCloseHandle(connect);
+            WinHttpCloseHandle(session);
+            outError = L"Request cancelled";
+            return false;
+        }
         const size_t prev = responseBytes.size();
         responseBytes.resize(prev + bytesAvailable);
         DWORD bytesRead = 0;
@@ -396,9 +418,9 @@ void OpenAIProvider::CancelAll() {
 
 void OpenAIProvider::Translate(TranslationRequest request, TranslationCallback callback) {
     Pending p;
+    p.cancelled = request.cancellationToken ? request.cancellationToken : std::make_shared<std::atomic<bool>>(false);
     p.request = std::move(request);
     p.callback = std::move(callback);
-    p.cancelled = std::make_shared<std::atomic<bool>>(false);
     {
         std::lock_guard lock(mutex_);
         queue_.push_back(std::move(p));
@@ -696,7 +718,7 @@ bool OpenAIProvider::TestConnection(const std::wstring& endpoint, const std::wst
     DWORD statusCode = 0;
     std::wstring responseBody;
     std::wstring httpError;
-    if (!PerformHttpRequest(endpoint, apiKey, utf8Body, timeoutMs, statusCode, responseBody, httpError)) {
+    if (!PerformHttpRequest(endpoint, apiKey, utf8Body, timeoutMs, nullptr, statusCode, responseBody, httpError)) {
         outError = httpError;
         return false;
     }
@@ -733,6 +755,7 @@ void OpenAIProvider::WorkerLoop() {
             queue_.pop_front();
         }
         if (p.cancelled->load()) {
+            Logger::Instance().Debug(cat::Translation, L"[TRANSLATION] provider skipping cancelled queued req=#{}", p.request.requestId);
             TranslationResult res;
             res.requestId = p.request.requestId;
             res.ok = false;
@@ -814,7 +837,7 @@ TranslationResult OpenAIProvider::ExecuteOne(const TranslationRequest& req,
                                                  statusCode, responseBody, httpError);
         } else {
             httpOk = PerformHttpRequest(config_.endpoint, config_.apiKey, utf8Body,
-                                        config_.timeoutMs, statusCode, responseBody, httpError);
+                                        config_.timeoutMs, cancelled, statusCode, responseBody, httpError);
             const auto tEnd = std::chrono::steady_clock::now();
             telemetry.completionTimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(tEnd - tStart).count();
             telemetry.streamed = false;

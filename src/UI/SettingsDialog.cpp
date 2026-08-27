@@ -50,6 +50,8 @@ enum Ctrl : int {
     kMaxTokens = 30,
     kOperation = 31,
     kSmartPaste = 32,
+    kSpeculativeTranslation = 33,
+    kSpeculativeNote = 34,
 };
 
 constexpr UINT kTestResultMsg = WM_APP + 100;
@@ -92,7 +94,7 @@ constexpr int kRowAdvance = 28;
 constexpr int kFullW = kLabelW + kGap + kControlW; // 480
 constexpr int kClientW = kMarginX * 2 + kFullW;    // 520
 constexpr int kBaseClientH = 552;
-constexpr int kExpandedClientH = 668;
+constexpr int kExpandedClientH = 720;
 
 // Advanced Settings 2-Column Grid dimensions (at 96 DPI).
 constexpr int kAdvColGap = 16;
@@ -391,6 +393,11 @@ void UpdateProviderControls(HWND hwnd, ProviderId provider, const std::wstring& 
     SetWindowTextW(keyStatus, KeyStatusText(provider).c_str());
 }
 
+bool IsSpeculativeSupported(ProviderId provider, const std::wstring& model) {
+    if (provider != ProviderId::OpenAI) return false;
+    return (model.empty() || model == L"gpt-5.6-luna");
+}
+
 void UpdateCapabilityControls(HWND hwnd, ProviderId provider, const std::wstring& model) {
     const ModelCapabilities caps = GetModelCapabilities(provider, model);
     HWND tempEdit = GetDlgItem(hwnd, kTemperature);
@@ -402,6 +409,20 @@ void UpdateCapabilityControls(HWND hwnd, ProviderId provider, const std::wstring
     EnableWindow(topPEdit, caps.SupportsTopP() ? TRUE : FALSE);
     EnableWindow(topKEdit, caps.SupportsTopK() ? TRUE : FALSE);
     EnableWindow(maxTokensEdit, caps.SupportsMaxOutputTokens() ? TRUE : FALSE);
+
+    HWND specChk = GetDlgItem(hwnd, kSpeculativeTranslation);
+    HWND specNote = GetDlgItem(hwnd, kSpeculativeNote);
+    const bool specSupported = IsSpeculativeSupported(provider, model);
+    if (specChk) {
+        EnableWindow(specChk, specSupported ? TRUE : FALSE);
+    }
+    if (specNote) {
+        if (specSupported) {
+            SetWindowTextW(specNote, L"Translate in the background while you type for faster final results.");
+        } else {
+            SetWindowTextW(specNote, L"Predictive translation is currently only available for OpenAI (gpt-5.6-luna).");
+        }
+    }
 }
 
 void CollectValues(HWND hwnd, DialogData& data) {
@@ -443,6 +464,11 @@ void CollectValues(HWND hwnd, DialogData& data) {
     data.config.debounceMs = _wtoi(GetEdit(GetDlgItem(hwnd, kDebounce)).c_str());
     data.config.minChars = _wtoi(GetEdit(GetDlgItem(hwnd, kMinChars)).c_str());
     data.config.maxBufferChars = _wtoi(GetEdit(GetDlgItem(hwnd, kMaxBuffer)).c_str());
+
+    // Predictive Translation (Experimental)
+    const bool specChecked = (IsDlgButtonChecked(hwnd, kSpeculativeTranslation) == BST_CHECKED);
+    const bool specSupported = IsSpeculativeSupported(data.config.provider, data.config.model);
+    data.config.speculativeTranslationEnabled = (specChecked && specSupported);
 
     // Advanced Model Parameters
     const std::wstring tempStr = GetEdit(GetDlgItem(hwnd, kTemperature));
@@ -989,6 +1015,29 @@ bool ShowSettingsDialog(HWND parent, AppConfig& config) {
     HWND hEditTopK = AddEdit(hwnd, font, topKVal.c_str(), col1EditX, r4Y, col1EditW, controlH, 0, kTopK);
     data.advancedControls.push_back(hLblTopK);
     data.advancedControls.push_back(hEditTopK);
+
+    // Row 5: Predictive Translation (Experimental) Checkbox & Explanatory Subtitle
+    const int r5Y = advY + advRowAdv * 4;
+    HWND hChkSpec = CreateWindowExW(0, L"BUTTON", L"Predictive Translation (Experimental)",
+                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+                                    col1LabelX, r5Y, fullW, controlH, hwnd,
+                                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSpeculativeTranslation)),
+                                    GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(hChkSpec, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    CheckDlgButton(hwnd, kSpeculativeTranslation,
+                   (config.speculativeTranslationEnabled && IsSpeculativeSupported(config.provider, config.model))
+                       ? BST_CHECKED : BST_UNCHECKED);
+    data.advancedControls.push_back(hChkSpec);
+
+    HWND hLblSpecNote = CreateWindowExW(0, L"STATIC",
+                                        L"Prepare translations in the background during longer pauses for faster final results.",
+                                        WS_CHILD | WS_VISIBLE | SS_LEFT,
+                                        col1LabelX + ScaleDpi(20, dpi), r5Y + ScaleDpi(22, dpi),
+                                        fullW - ScaleDpi(20, dpi), ScaleDpi(18, dpi), hwnd,
+                                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSpeculativeNote)),
+                                        GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(hLblSpecNote, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    data.advancedControls.push_back(hLblSpecNote);
 
     for (HWND hCtrl : data.advancedControls) {
         ShowWindow(hCtrl, SW_HIDE);
