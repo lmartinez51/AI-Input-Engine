@@ -39,7 +39,7 @@ third-party dependencies (custom JSON parser, custom test harness).
 
 ### Unit & Simulation tests
 
-`aiie_unit_tests.exe` — 277 tests, ~1206 checks, no external dependencies.
+`aiie_unit_tests.exe` — 278 tests, ~1224 checks, no external dependencies.
 Sources in `tests/unit/`, harness in `tests/mini_test.h`.
 
 Includes:

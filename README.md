@@ -1,5 +1,7 @@
 # AI Input Engine
 
+![AI Input Engine](resources/infographic.jfif)
+
 AI Input Engine is a Windows-native input method that transparently transforms
 text as you type in real time, before it is committed to the target application.
 
@@ -68,7 +70,7 @@ flowchart TD
 |---|---|
 | `AIInputEngine.exe` | System tray host, hook-based input engine, Smart Paste manager, modern settings & diagnostics UI |
 | `AIInputEngineTSF.dll` | Text Services Framework (TSF) text service (native IME path) |
-| `aiie_unit_tests.exe` | Comprehensive unit & simulation test suite (277 deterministic tests, 0 failures) |
+| `aiie_unit_tests.exe` | Comprehensive unit & simulation test suite (278 deterministic tests, 0 failures) |
 | `aiie_openaitest.exe` | Live OpenAI connectivity, translation, streaming, and rewrite validation tool |
 | `aiie_geminitest.exe` | Live Gemini diagnostic tool |
 | `aiie_tsfhost.exe` | TSF host proof tool verifying composition -> transformation -> commit |

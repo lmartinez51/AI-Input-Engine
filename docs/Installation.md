@@ -22,7 +22,7 @@ Output binaries land in `build\Release\` (or `build\Debug\`):
 | `AIInputEngine.exe` | Tray host (hook mode, Smart Paste, settings & diagnostics UI) |
 | `AIInputEngineTSF.dll` | TSF text service (native IME mode) |
 | `aiie_tsfreg.exe` | TSF registration/verification tool |
-| `aiie_unit_tests.exe` | Comprehensive unit & simulation test suite (277 tests) |
+| `aiie_unit_tests.exe` | Comprehensive unit & simulation test suite (278 tests) |
 | `aiie_openaitest.exe` | Live OpenAI connectivity, streaming, and model validation tool |
 | `aiie_geminitest.exe` | Live Gemini diagnostic tool |
 | `aiie_tsfhost.exe` | TSF host proof tool verifying composition -> transformation -> commit |

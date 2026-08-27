@@ -150,7 +150,7 @@ thread; their callbacks only marshal data.
 
 ## Test layout
 
-- `tests/unit/` — 277 unit tests, ~1206 checks, no external dependencies, custom harness
+- `tests/unit/` — 278 unit tests, ~1224 checks, no external dependencies, custom harness
   `tests/mini_test.h`.
 - `tests/unit/speculative_phase2_sim.cpp` & `tests/unit/trigger_optimizer_sim.cpp` —
   multi-seed statistical simulations and 12-scenario typing benchmark matrices.

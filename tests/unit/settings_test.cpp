@@ -662,8 +662,12 @@ TEST(settings_dialog_speculative_control_state_and_provider_gating) {
 
     // Under OpenAI provider (default model gpt-5.6-luna), checkbox must be ENABLED
     CHECK_EQ(IsWindowEnabled(specChk), TRUE);
+    wchar_t chkText[64] = {};
+    GetWindowTextW(specChk, chkText, 64);
+    CHECK_STREQ(chkText, L"Predictive Translation");
+
     GetWindowTextW(specNote, noteBuf, 256);
-    CHECK(wcsstr(noteBuf, L"Translate in the background") != nullptr);
+    CHECK_STREQ(noteBuf, L"Prepare translations in the background during longer pauses for faster final results.");
 
     // 3. User checks the checkbox
     CheckDlgButton(hwnd, 33, BST_CHECKED);
@@ -676,5 +680,76 @@ TEST(settings_dialog_speculative_control_state_and_provider_gating) {
 
     CloseAndJoin(hwnd, uiThread);
 }
+
+TEST(settings_dialog_opening_position_upward_bias_and_clamping) {
+    std::thread uiThread([] {
+        AppConfig cfg;
+        ShowSettingsDialog(nullptr, cfg);
+    });
+
+    HWND hwnd = WaitForDialog();
+    CHECK(hwnd != nullptr);
+    if (!hwnd) {
+        if (uiThread.joinable()) uiThread.detach();
+        return;
+    }
+
+    RECT rcWin{};
+    CHECK(GetWindowRect(hwnd, &rcWin));
+
+    HMONITOR hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{sizeof(MONITORINFO)};
+    RECT workArea{};
+    if (hMon && GetMonitorInfoW(hMon, &mi)) {
+        workArea = mi.rcWork;
+    } else {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+    }
+
+    const int winW = rcWin.right - rcWin.left;
+    const int winH = rcWin.bottom - rcWin.top;
+    const int screenW = workArea.right - workArea.left;
+    const int screenH = workArea.bottom - workArea.top;
+    const int normalCenterY = workArea.top + std::max(0, (screenH - winH) / 2);
+
+    // 1. Horizontally centered (within 2px rounding margin)
+    const int normalCenterX = workArea.left + std::max(0, (screenW - winW) / 2);
+    CHECK_LE(std::abs(rcWin.left - normalCenterX), 2);
+
+    // 2. Upward biased Y position (top should be above normal center Y)
+    CHECK_LE(rcWin.top, normalCenterY);
+
+    // 3. Clamped within monitor work area
+    CHECK(rcWin.left >= workArea.left);
+    CHECK(rcWin.top >= workArea.top);
+    CHECK_LE(rcWin.right, workArea.right);
+    CHECK_LE(rcWin.bottom, workArea.bottom);
+
+    // 4. Test expansion: bottom of expanded dialog should remain on screen
+    HWND toggleBtn = GetDlgItem(hwnd, 23); // kAdvancedToggle
+    CHECK(toggleBtn != nullptr);
+    SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(23, BN_CLICKED), reinterpret_cast<LPARAM>(toggleBtn));
+
+    RECT rcExp{};
+    CHECK(GetWindowRect(hwnd, &rcExp));
+    CHECK_LE(rcExp.bottom, workArea.bottom);
+
+    // OK and Cancel buttons must be visible and within dialog rect
+    HWND btnOk = GetDlgItem(hwnd, 1);
+    HWND btnCancel = GetDlgItem(hwnd, 2);
+    CHECK(btnOk != nullptr);
+    CHECK(btnCancel != nullptr);
+    CHECK_EQ(IsWindowVisible(btnOk), TRUE);
+    CHECK_EQ(IsWindowVisible(btnCancel), TRUE);
+
+    RECT rcOk{}, rcCancel{};
+    GetWindowRect(btnOk, &rcOk);
+    GetWindowRect(btnCancel, &rcCancel);
+    CHECK_LE(rcOk.bottom, workArea.bottom);
+    CHECK_LE(rcCancel.bottom, workArea.bottom);
+
+    CloseAndJoin(hwnd, uiThread);
+}
+
 
 

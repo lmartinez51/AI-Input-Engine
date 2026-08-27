@@ -96,6 +96,9 @@ constexpr int kClientW = kMarginX * 2 + kFullW;    // 520
 constexpr int kBaseClientH = 552;
 constexpr int kExpandedClientH = 720;
 
+// Upward opening bias (at 96 DPI) so expanded dialog keeps action buttons on-screen.
+constexpr int kOpenUpwardBiasDip = 85;
+
 // Advanced Settings 2-Column Grid dimensions (at 96 DPI).
 constexpr int kAdvColGap = 16;
 constexpr int kAdvColW = (kFullW - kAdvColGap) / 2; // 232
@@ -418,7 +421,7 @@ void UpdateCapabilityControls(HWND hwnd, ProviderId provider, const std::wstring
     }
     if (specNote) {
         if (specSupported) {
-            SetWindowTextW(specNote, L"Translate in the background while you type for faster final results.");
+            SetWindowTextW(specNote, L"Prepare translations in the background during longer pauses for faster final results.");
         } else {
             SetWindowTextW(specNote, L"Predictive translation is currently only available for OpenAI (gpt-5.6-luna).");
         }
@@ -465,7 +468,7 @@ void CollectValues(HWND hwnd, DialogData& data) {
     data.config.minChars = _wtoi(GetEdit(GetDlgItem(hwnd, kMinChars)).c_str());
     data.config.maxBufferChars = _wtoi(GetEdit(GetDlgItem(hwnd, kMaxBuffer)).c_str());
 
-    // Predictive Translation (Experimental)
+    // Predictive Translation
     const bool specChecked = (IsDlgButtonChecked(hwnd, kSpeculativeTranslation) == BST_CHECKED);
     const bool specSupported = IsSpeculativeSupported(data.config.provider, data.config.model);
     data.config.speculativeTranslationEnabled = (specChecked && specSupported);
@@ -712,11 +715,22 @@ bool ShowSettingsDialog(HWND parent, AppConfig& config) {
     const int winH = rc.bottom - rc.top;
 
     RECT workArea{};
-    SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+    HMONITOR hMon = MonitorFromWindow(parent ? parent : GetDesktopWindow(), MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{sizeof(MONITORINFO)};
+    if (hMon && GetMonitorInfoW(hMon, &mi)) {
+        workArea = mi.rcWork;
+    } else {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+    }
+
     const int screenW = workArea.right - workArea.left;
     const int screenH = workArea.bottom - workArea.top;
-    const int x = workArea.left + std::max(0, (screenW - winW) / 2);
-    const int y = workArea.top + std::max(0, (screenH - winH) / 2);
+    int x = workArea.left + std::max(0, (screenW - winW) / 2);
+    int y = workArea.top + std::max(0, (screenH - winH) / 2) - ScaleDpi(kOpenUpwardBiasDip, dpi);
+
+    // Clamp to monitor work area so dialog never extends outside usable desktop
+    x = std::max(static_cast<int>(workArea.left), std::min(x, static_cast<int>(workArea.right - winW)));
+    y = std::max(static_cast<int>(workArea.top), std::min(y, static_cast<int>(workArea.bottom - winH)));
 
     DialogData data;
     data.config = config;
@@ -1016,9 +1030,9 @@ bool ShowSettingsDialog(HWND parent, AppConfig& config) {
     data.advancedControls.push_back(hLblTopK);
     data.advancedControls.push_back(hEditTopK);
 
-    // Row 5: Predictive Translation (Experimental) Checkbox & Explanatory Subtitle
+    // Row 5: Predictive Translation Checkbox & Explanatory Subtitle
     const int r5Y = advY + advRowAdv * 4;
-    HWND hChkSpec = CreateWindowExW(0, L"BUTTON", L"Predictive Translation (Experimental)",
+    HWND hChkSpec = CreateWindowExW(0, L"BUTTON", L"Predictive Translation",
                                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
                                     col1LabelX, r5Y, fullW, controlH, hwnd,
                                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(kSpeculativeTranslation)),
