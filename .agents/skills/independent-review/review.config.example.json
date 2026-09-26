@@ -1,0 +1,31 @@
+{
+  "maxRounds": 3,
+  "requireChecks": true,
+
+  "checks": [
+    { "name": "build", "cmd": "cmake --build build", "timeoutSec": 900 },
+    { "name": "unit tests", "cmd": "ctest --test-dir build --output-on-failure", "timeoutSec": 600 }
+  ],
+
+  "diff": {
+    "base": "HEAD",
+    "maxChars": 80000
+  },
+
+  "openai": {
+    "model": "PUT_YOUR_OPENAI_MODEL_ID_HERE",
+    "timeoutSec": 180
+  },
+
+  "jev": {
+    "model": "jev-1.13.0"
+  },
+
+  "thresholds": {
+    "sensitiveArea": 0.6,
+    "publicInterface": null,
+    "unrelatedChanges": 0.7,
+    "riskScoreHuman": 1.5,
+    "riskMinConfidence": 0.5
+  }
+}

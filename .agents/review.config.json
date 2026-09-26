@@ -1,0 +1,26 @@
+{
+  "maxRounds": 20,
+  "requireChecks": true,
+  "checks": [
+    { "name": "cmake build", "cmd": "cmake --build build --config Release", "timeoutSec": 300 },
+    { "name": "unit tests", "cmd": ".\\build\\Release\\aiie_unit_tests.exe", "timeoutSec": 180 }
+  ],
+  "diff": {
+    "base": "HEAD",
+    "maxChars": 120000
+  },
+  "openai": {
+    "model": "gpt-6-astra",
+    "timeoutSec": 180
+  },
+  "jev": {
+    "model": "jev-1.13.0"
+  },
+  "thresholds": {
+    "sensitiveArea": 0.6,
+    "publicInterface": null,
+    "unrelatedChanges": 0.7,
+    "riskScoreHuman": 1.5,
+    "riskMinConfidence": 0.5
+  }
+}

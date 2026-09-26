@@ -3,8 +3,12 @@
 #include <windows.h>
 
 #include <chrono>
+#include <functional>
 #include <string>
 #include <string_view>
+#include <vector>
+
+#include "Input/HookBackend.h"
 
 namespace aiie {
 
@@ -17,6 +21,39 @@ struct ClipboardCheckResult {
 
 class ClipboardHelper {
 public:
+    struct ModifierState {
+        bool leftShift = false;
+        bool rightShift = false;
+        bool leftAlt = false;
+        bool rightAlt = false;
+        bool leftCtrl = false;
+        bool rightCtrl = false;
+    };
+
+    // Builds the normalized synthetic keyboard input sequence for Ctrl+V injection:
+    // 1. Temporarily releases any held Shift or Alt modifiers (with extended-key flag for right Alt).
+    // 2. Synthesizes Ctrl+V keydown and keyup with synthetic signature.
+    // 3. Restores any originally held Shift or Alt modifiers with matching extended-key flags.
+    static std::vector<INPUT> BuildNormalizedPasteInputs(const ModifierState& modifiers);
+
+    // Deduces modifier state from the temporary release prefix of an input sequence.
+    static ModifierState DeduceModifiersFromInputs(const std::vector<INPUT>& inputs);
+
+    // Computes best-effort recovery inputs to return keyboard state to the desired final state:
+    // synthetic Ctrl/V keys released (UP) and physically held modifiers restored (DOWN),
+    // if SendInput partially fails after dispatching `sentCount` inputs.
+    static std::vector<INPUT> BuildRecoveryInputs(const std::vector<INPUT>& attemptedInputs,
+                                                 UINT sentCount,
+                                                 const ModifierState& modifiers);
+    static std::vector<INPUT> BuildRecoveryInputs(const std::vector<INPUT>& attemptedInputs,
+                                                 UINT sentCount);
+
+    // Queries physical modifier key state from OS and dispatches the normalized paste sequence.
+    // Performs best-effort keyboard state recovery if partial dispatch occurs.
+    // Accepts an optional custom sender function for unit testing and failure verification.
+    using InputSender = std::function<UINT(UINT nInputs, LPINPUT pInputs, int cbSize)>;
+    static bool DispatchNormalizedPasteKeystroke(InputSender customSender = nullptr);
+
     // Checks the current clipboard state and format composition.
     // In v1, Smart Paste only proceeds if the clipboard contains text and
     // does not contain complex non-text formats (images, files, OLE streams)

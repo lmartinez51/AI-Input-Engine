@@ -1,0 +1,11 @@
+{
+  "name": "independent-review",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Review gate for Antigravity: deterministic checks + cross-vendor LLM review + Jev triage.",
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@typesafe-ai/sdk": "^0.6.0"
+  }
+}

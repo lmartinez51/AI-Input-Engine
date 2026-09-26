@@ -62,7 +62,8 @@ flowchart TD
 - **Security & Privacy**: API keys are securely stored in Windows Credential Manager (DPAPI); never logged or stored in plaintext.
 - **Safety & Anti-Conversational Guarantees**: Strict instruction guardrails ensure the AI only translates or rewrites and never answers questions or injects conversational filler. Preserves protected tokens (URLs, emails, mentions, hashtags, code).
 - **Exact Cache Identity & Monotonic IDs**: Isolation key across `providerId | model | operation | sourceLanguage | targetLanguage | profile | customInstructions | text`. Monotonic request tracking guarantees obsolete responses are discarded.
-- **Speculative Translation (PCHP)**: Pre-Commit Hesitation Prediction preemptively streams translations during natural typing pauses, achieving near 0-ms commit latency.
+- **Smart Paste Heuristics & Key Recovery**: High-fidelity content analysis distinguishing code snippets and secrets from natural prose containing programming symbols (`==`, `!=`, `->`, `++`). Synthetic paste uses full modifier state recovery to prevent stuck Ctrl or Shift keys.
+- **Speculative Translation (PCHP)**: Pre-Commit Hesitation Prediction preemptively streams translations during natural typing pauses (canonical gates: $\ge 450\text{ ms}$ hesitation, $\ge 10\text{ chars}$ buffer, $\ge 8\text{ chars}$ growth, $\ge 750\text{ ms}$ cooldown), achieving near 0-ms commit latency while guaranteeing single physical concurrency and candidate ready suppression.
 
 ## Components
 
@@ -70,7 +71,7 @@ flowchart TD
 |---|---|
 | `AIInputEngine.exe` | System tray host, hook-based input engine, Smart Paste manager, modern settings & diagnostics UI |
 | `AIInputEngineTSF.dll` | Text Services Framework (TSF) text service (native IME path) |
-| `aiie_unit_tests.exe` | Comprehensive unit & simulation test suite (278 deterministic tests, 0 failures) |
+| `aiie_unit_tests.exe` | Comprehensive unit & simulation test suite (299 deterministic tests, 0 failures) |
 | `aiie_openaitest.exe` | Live OpenAI connectivity, translation, streaming, and rewrite validation tool |
 | `aiie_geminitest.exe` | Live Gemini diagnostic tool |
 | `aiie_tsfhost.exe` | TSF host proof tool verifying composition -> transformation -> commit |

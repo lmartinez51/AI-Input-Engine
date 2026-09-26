@@ -429,6 +429,12 @@ void TrayApp::ApplyConfig() {
             ProviderFactory::Create(cfg), cache_, cfg.requestTimeoutMs);
         engine_ = std::make_shared<InputEngine>(dispatcher_, backend_, pipeline_, logger_);
         smartPaste_ = std::make_shared<SmartPasteManager>(pipeline_, status_, &config_, dispatcher_);
+        auto eng = engine_;
+        smartPaste_->SetPrePasteHook([eng] {
+            if (eng) {
+                eng->FlushBuffer();
+            }
+        });
     }
 
     RebuildProvider();

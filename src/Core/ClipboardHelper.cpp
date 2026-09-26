@@ -9,7 +9,7 @@ namespace aiie {
 
 namespace {
 
-bool OpenClipboardWithRetry(HWND hwndOwner, int maxRetries = 5, int sleepMs = 10) {
+bool OpenClipboardWithRetry(HWND hwndOwner, int maxRetries = 20, int sleepMs = 10) {
     for (int i = 0; i < maxRetries; ++i) {
         if (OpenClipboard(hwndOwner)) {
             return true;
@@ -22,6 +22,331 @@ bool OpenClipboardWithRetry(HWND hwndOwner, int maxRetries = 5, int sleepMs = 10
 }
 
 } // namespace
+
+std::vector<INPUT> ClipboardHelper::BuildNormalizedPasteInputs(const ModifierState& modifiers) {
+    struct HeldModifier {
+        WORD vk;
+        WORD scan;
+        DWORD flags; // 0 or KEYEVENTF_EXTENDEDKEY
+    };
+
+    std::vector<HeldModifier> heldModifiers;
+    if (modifiers.leftShift) {
+        heldModifiers.push_back({ VK_LSHIFT, static_cast<WORD>(MapVirtualKeyW(VK_LSHIFT, MAPVK_VK_TO_VSC)), 0 });
+    }
+    if (modifiers.rightShift) {
+        heldModifiers.push_back({ VK_RSHIFT, static_cast<WORD>(MapVirtualKeyW(VK_RSHIFT, MAPVK_VK_TO_VSC)), 0 });
+    }
+    if (modifiers.leftAlt) {
+        heldModifiers.push_back({ VK_LMENU, static_cast<WORD>(MapVirtualKeyW(VK_LMENU, MAPVK_VK_TO_VSC)), 0 });
+    }
+    if (modifiers.rightAlt) {
+        heldModifiers.push_back({ VK_RMENU, static_cast<WORD>(MapVirtualKeyW(VK_RMENU, MAPVK_VK_TO_VSC)), KEYEVENTF_EXTENDEDKEY });
+    }
+
+    const bool ctrlHeldInitially = (modifiers.leftCtrl || modifiers.rightCtrl);
+
+    std::vector<INPUT> inputs;
+    inputs.reserve(heldModifiers.size() * 2 + (ctrlHeldInitially ? 3 : 4));
+
+    // 1. If any Shift or Alt key is held, temporarily lift it so destination receives standard Ctrl+V
+    for (const auto& mod : heldModifiers) {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = mod.vk;
+        in.ki.wScan = mod.scan;
+        in.ki.dwFlags = mod.flags | KEYEVENTF_KEYUP;
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        inputs.push_back(in);
+    }
+
+    // 2. Synthesize Ctrl+V
+    // Only synthesize Ctrl down and up if neither Ctrl key was held initially.
+    // If a Ctrl key was already held by the user (left or right Ctrl), it is already down;
+    // injecting an extra generic (left) Ctrl down without keyup would corrupt the state
+    // when only right Ctrl was physically held.
+    if (!ctrlHeldInitially) {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = VK_CONTROL;
+        in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(VK_CONTROL, MAPVK_VK_TO_VSC));
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        inputs.push_back(in);
+    }
+    {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = 'V';
+        in.ki.wScan = static_cast<WORD>(MapVirtualKeyW('V', MAPVK_VK_TO_VSC));
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        inputs.push_back(in);
+    }
+    {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = 'V';
+        in.ki.wScan = static_cast<WORD>(MapVirtualKeyW('V', MAPVK_VK_TO_VSC));
+        in.ki.dwFlags = KEYEVENTF_KEYUP;
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        inputs.push_back(in);
+    }
+    if (!ctrlHeldInitially) {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = VK_CONTROL;
+        in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(VK_CONTROL, MAPVK_VK_TO_VSC));
+        in.ki.dwFlags = KEYEVENTF_KEYUP;
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        inputs.push_back(in);
+    }
+
+    // 3. Restore the exact physically held modifier keys
+    for (const auto& mod : heldModifiers) {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = mod.vk;
+        in.ki.wScan = mod.scan;
+        in.ki.dwFlags = mod.flags;
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        inputs.push_back(in);
+    }
+
+    return inputs;
+}
+
+ClipboardHelper::ModifierState ClipboardHelper::DeduceModifiersFromInputs(const std::vector<INPUT>& inputs) {
+    ModifierState m;
+    bool hasCtrlDown = false;
+    for (const auto& in : inputs) {
+        if (in.ki.wVk == VK_CONTROL && (in.ki.dwFlags & KEYEVENTF_KEYUP) == 0) {
+            hasCtrlDown = true;
+        }
+        if ((in.ki.dwFlags & KEYEVENTF_KEYUP) != 0) {
+            if (in.ki.wVk == VK_LSHIFT) m.leftShift = true;
+            else if (in.ki.wVk == VK_RSHIFT) m.rightShift = true;
+            else if (in.ki.wVk == VK_LMENU) m.leftAlt = true;
+            else if (in.ki.wVk == VK_RMENU) m.rightAlt = true;
+        }
+    }
+    if (!hasCtrlDown && !inputs.empty()) {
+        m.leftCtrl = true;
+    }
+    return m;
+}
+
+std::vector<INPUT> ClipboardHelper::BuildRecoveryInputs(const std::vector<INPUT>& attemptedInputs,
+                                                       UINT sentCount,
+                                                       const ModifierState& modifiers) {
+    std::vector<INPUT> recoveryInputs;
+    if (sentCount == 0 || sentCount >= attemptedInputs.size()) {
+        return recoveryInputs;
+    }
+
+    // Determine current state of relevant keys after dispatching attemptedInputs[0 .. sentCount - 1]
+    bool lCtrlDown = modifiers.leftCtrl;
+    bool rCtrlDown = modifiers.rightCtrl;
+    bool vDown = false;
+    bool lShiftDown = modifiers.leftShift;
+    bool rShiftDown = modifiers.rightShift;
+    bool lAltDown = modifiers.leftAlt;
+    bool rAltDown = modifiers.rightAlt;
+
+    for (UINT i = 0; i < sentCount; ++i) {
+        const auto& in = attemptedInputs[i];
+        const bool isUp = ((in.ki.dwFlags & KEYEVENTF_KEYUP) != 0);
+        const bool isExtended = ((in.ki.dwFlags & KEYEVENTF_EXTENDEDKEY) != 0);
+        switch (in.ki.wVk) {
+            case VK_CONTROL:
+                if (isExtended) {
+                    rCtrlDown = !isUp;
+                } else {
+                    lCtrlDown = !isUp;
+                }
+                break;
+            case VK_LCONTROL: lCtrlDown = !isUp; break;
+            case VK_RCONTROL: rCtrlDown = !isUp; break;
+            case 'V': vDown = !isUp; break;
+            case VK_LSHIFT: lShiftDown = !isUp; break;
+            case VK_RSHIFT: rShiftDown = !isUp; break;
+            case VK_LMENU: lAltDown = !isUp; break;
+            case VK_RMENU: rAltDown = !isUp; break;
+            default: break;
+        }
+    }
+
+    // Desired final states:
+    // 1. Synthetic keys ('V', synthetic VK_CONTROL) must be UP if not held initially
+    if (vDown) {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = 'V';
+        in.ki.wScan = static_cast<WORD>(MapVirtualKeyW('V', MAPVK_VK_TO_VSC));
+        in.ki.dwFlags = KEYEVENTF_KEYUP;
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        recoveryInputs.push_back(in);
+    }
+    if (!modifiers.leftCtrl && lCtrlDown) {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = VK_CONTROL;
+        in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(VK_CONTROL, MAPVK_VK_TO_VSC));
+        in.ki.dwFlags = KEYEVENTF_KEYUP;
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        recoveryInputs.push_back(in);
+    }
+    if (!modifiers.rightCtrl && rCtrlDown) {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = VK_RCONTROL;
+        in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(VK_RCONTROL, MAPVK_VK_TO_VSC));
+        in.ki.dwFlags = KEYEVENTF_KEYUP | KEYEVENTF_EXTENDEDKEY;
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        recoveryInputs.push_back(in);
+    }
+
+    // 2. Modifiers: if held initially, must end up restored (DOWN)
+    if (modifiers.leftCtrl && !lCtrlDown) {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = VK_LCONTROL;
+        in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(VK_LCONTROL, MAPVK_VK_TO_VSC));
+        in.ki.dwFlags = 0;
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        recoveryInputs.push_back(in);
+    }
+    if (modifiers.rightCtrl && !rCtrlDown) {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = VK_RCONTROL;
+        in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(VK_RCONTROL, MAPVK_VK_TO_VSC));
+        in.ki.dwFlags = KEYEVENTF_EXTENDEDKEY;
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        recoveryInputs.push_back(in);
+    }
+    if (modifiers.leftShift && !lShiftDown) {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = VK_LSHIFT;
+        in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(VK_LSHIFT, MAPVK_VK_TO_VSC));
+        in.ki.dwFlags = 0;
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        recoveryInputs.push_back(in);
+    }
+    if (modifiers.rightShift && !rShiftDown) {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = VK_RSHIFT;
+        in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(VK_RSHIFT, MAPVK_VK_TO_VSC));
+        in.ki.dwFlags = 0;
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        recoveryInputs.push_back(in);
+    }
+    if (modifiers.leftAlt && !lAltDown) {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = VK_LMENU;
+        in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(VK_LMENU, MAPVK_VK_TO_VSC));
+        in.ki.dwFlags = 0;
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        recoveryInputs.push_back(in);
+    }
+    if (modifiers.rightAlt && !rAltDown) {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = VK_RMENU;
+        in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(VK_RMENU, MAPVK_VK_TO_VSC));
+        in.ki.dwFlags = KEYEVENTF_EXTENDEDKEY;
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        recoveryInputs.push_back(in);
+    }
+
+    // If not held initially but currently down, release
+    if (!modifiers.leftShift && lShiftDown) {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = VK_LSHIFT;
+        in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(VK_LSHIFT, MAPVK_VK_TO_VSC));
+        in.ki.dwFlags = KEYEVENTF_KEYUP;
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        recoveryInputs.push_back(in);
+    }
+    if (!modifiers.rightShift && rShiftDown) {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = VK_RSHIFT;
+        in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(VK_RSHIFT, MAPVK_VK_TO_VSC));
+        in.ki.dwFlags = KEYEVENTF_KEYUP;
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        recoveryInputs.push_back(in);
+    }
+    if (!modifiers.leftAlt && lAltDown) {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = VK_LMENU;
+        in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(VK_LMENU, MAPVK_VK_TO_VSC));
+        in.ki.dwFlags = KEYEVENTF_KEYUP;
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        recoveryInputs.push_back(in);
+    }
+    if (!modifiers.rightAlt && rAltDown) {
+        INPUT in = {};
+        in.type = INPUT_KEYBOARD;
+        in.ki.wVk = VK_RMENU;
+        in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(VK_RMENU, MAPVK_VK_TO_VSC));
+        in.ki.dwFlags = KEYEVENTF_KEYUP | KEYEVENTF_EXTENDEDKEY;
+        in.ki.dwExtraInfo = kAiieSyntheticSignature;
+        recoveryInputs.push_back(in);
+    }
+
+    return recoveryInputs;
+}
+
+std::vector<INPUT> ClipboardHelper::BuildRecoveryInputs(const std::vector<INPUT>& attemptedInputs,
+                                                       UINT sentCount) {
+    return BuildRecoveryInputs(attemptedInputs, sentCount, DeduceModifiersFromInputs(attemptedInputs));
+}
+
+bool ClipboardHelper::DispatchNormalizedPasteKeystroke(InputSender customSender) {
+    ModifierState modifiers;
+    modifiers.leftShift = ((GetAsyncKeyState(VK_LSHIFT) & 0x8000) != 0);
+    modifiers.rightShift = ((GetAsyncKeyState(VK_RSHIFT) & 0x8000) != 0);
+    modifiers.leftAlt = ((GetAsyncKeyState(VK_LMENU) & 0x8000) != 0);
+    modifiers.rightAlt = ((GetAsyncKeyState(VK_RMENU) & 0x8000) != 0);
+    modifiers.leftCtrl = ((GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0);
+    modifiers.rightCtrl = ((GetAsyncKeyState(VK_RCONTROL) & 0x8000) != 0);
+    if (!modifiers.leftCtrl && !modifiers.rightCtrl && ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0)) {
+        modifiers.leftCtrl = true;
+    }
+
+    std::vector<INPUT> inputs = BuildNormalizedPasteInputs(modifiers);
+    const UINT count = static_cast<UINT>(inputs.size());
+    if (count == 0) {
+        return false;
+    }
+
+    UINT sent = 0;
+    if (customSender) {
+        sent = customSender(count, inputs.data(), sizeof(INPUT));
+    } else {
+        sent = SendInput(count, inputs.data(), sizeof(INPUT));
+    }
+
+    if (sent < count) {
+        if (sent > 0) {
+            std::vector<INPUT> recovery = BuildRecoveryInputs(inputs, sent, modifiers);
+            if (!recovery.empty()) {
+                if (customSender) {
+                    customSender(static_cast<UINT>(recovery.size()), recovery.data(), sizeof(INPUT));
+                } else {
+                    SendInput(static_cast<UINT>(recovery.size()), recovery.data(), sizeof(INPUT));
+                }
+            }
+        }
+        return false;
+    }
+
+    return true;
+}
 
 ClipboardCheckResult ClipboardHelper::InspectClipboard() {
     ClipboardCheckResult result;
@@ -140,6 +465,26 @@ bool ClipboardHelper::ExecuteSafePasteAndRestore(HWND targetHwnd,
         return false;
     }
 
+    // Fast-path: If transformedText == originalText, clipboard already contains the exact text.
+    // No temporary clipboard overwrite or sequence mutation needed.
+    if (transformedText == originalText) {
+        if (targetHwnd && targetHwnd != GetDesktopWindow()) {
+            const HWND currentFg = GetForegroundWindow();
+            if (currentFg && currentFg != targetHwnd) {
+                Logger::Instance().Warn(cat::Input, L"Smart Paste: target window lost foreground before paste");
+                return false;
+            }
+        }
+
+        if (!DispatchNormalizedPasteKeystroke()) {
+            Logger::Instance().Error(cat::Input, L"Smart Paste: verbatim SendInput(Ctrl+V) failed (err {})", GetLastError());
+            return false;
+        }
+
+        Logger::Instance().Info(cat::Input, L"Smart Paste: verbatim paste executed without clipboard mutation");
+        return true;
+    }
+
     // Step 1: Install temporary transformed text
     DWORD tempSequence = 0;
     if (!SetUnicodeText(transformedText, tempSequence, nullptr)) {
@@ -158,33 +503,8 @@ bool ClipboardHelper::ExecuteSafePasteAndRestore(HWND targetHwnd,
         }
     }
 
-    // Step 3: Synthesize hardware Ctrl+V keystroke
-    constexpr ULONG_PTR kAiieSyntheticSignature = 0x41494945;
-    INPUT inputs[4] = {};
-    inputs[0].type = INPUT_KEYBOARD;
-    inputs[0].ki.wVk = VK_CONTROL;
-    inputs[0].ki.wScan = static_cast<WORD>(MapVirtualKeyW(VK_CONTROL, MAPVK_VK_TO_VSC));
-    inputs[0].ki.dwExtraInfo = kAiieSyntheticSignature;
-
-    inputs[1].type = INPUT_KEYBOARD;
-    inputs[1].ki.wVk = 'V';
-    inputs[1].ki.wScan = static_cast<WORD>(MapVirtualKeyW('V', MAPVK_VK_TO_VSC));
-    inputs[1].ki.dwExtraInfo = kAiieSyntheticSignature;
-
-    inputs[2].type = INPUT_KEYBOARD;
-    inputs[2].ki.wVk = 'V';
-    inputs[2].ki.wScan = static_cast<WORD>(MapVirtualKeyW('V', MAPVK_VK_TO_VSC));
-    inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
-    inputs[2].ki.dwExtraInfo = kAiieSyntheticSignature;
-
-    inputs[3].type = INPUT_KEYBOARD;
-    inputs[3].ki.wVk = VK_CONTROL;
-    inputs[3].ki.wScan = static_cast<WORD>(MapVirtualKeyW(VK_CONTROL, MAPVK_VK_TO_VSC));
-    inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
-    inputs[3].ki.dwExtraInfo = kAiieSyntheticSignature;
-
-    const UINT sent = SendInput(4, inputs, sizeof(INPUT));
-    if (sent != 4) {
+    // Step 3: Synthesize hardware Ctrl+V keystroke with normalized modifiers
+    if (!DispatchNormalizedPasteKeystroke()) {
         Logger::Instance().Error(cat::Input, L"Smart Paste: SendInput(Ctrl+V) failed (err {})", GetLastError());
         RestoreIfSequenceMatches(tempSequence, originalText, nullptr);
         return false;
