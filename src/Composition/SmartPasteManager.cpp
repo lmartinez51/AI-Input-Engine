@@ -56,11 +56,6 @@ bool SmartPasteManager::IsEditorExecutable(std::wstring_view exeName) {
     if (exeName.empty()) {
         return false;
     }
-    std::wstring lower;
-    lower.reserve(exeName.size());
-    for (wchar_t c : exeName) {
-        lower.push_back(static_cast<wchar_t>(std::towlower(c)));
-    }
     static const std::vector<std::wstring_view> kEditorExes = {
         L"code.exe", L"devenv.exe", L"idea64.exe", L"clion64.exe", L"pycharm64.exe",
         L"webstorm64.exe", L"rider64.exe", L"goland64.exe", L"sublime_text.exe",
@@ -68,8 +63,19 @@ bool SmartPasteManager::IsEditorExecutable(std::wstring_view exeName) {
         L"pwsh.exe", L"alacritty.exe", L"kitty.exe", L"wezterm-gui.exe", L"neovide.exe"
     };
     for (auto editor : kEditorExes) {
-        if (lower == editor) {
-            return true;
+        if (exeName.size() == editor.size()) {
+            bool match = true;
+            for (size_t i = 0; i < exeName.size(); ++i) {
+                wchar_t ca = exeName[i];
+                wchar_t cb = editor[i];
+                if (ca != cb && static_cast<wchar_t>(std::towlower(ca)) != cb) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                return true;
+            }
         }
     }
     return false;
