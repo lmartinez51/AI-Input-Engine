@@ -51,7 +51,7 @@ void Logger::SetLogFile(std::wstring_view path) {
     std::error_code ec;
     std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
     // Open immediately to validate the path; failure is non-fatal (log to nowhere).
-    std::ofstream f(filePath_, std::ios::app);
+    std::ofstream f(std::filesystem::path(filePath_), std::ios::app);
     (void)f;
 }
 
@@ -74,7 +74,7 @@ void Logger::Log(LogLevel level, std::wstring_view category, const std::wstring&
     if (filePath_.empty()) {
         return;
     }
-    std::ofstream f(filePath_, std::ios::app);
+    std::ofstream f(std::filesystem::path(filePath_), std::ios::app);
     if (f) {
         const std::string utf8 = utf::ToUtf8(line);
         f << utf8 << '\n';
