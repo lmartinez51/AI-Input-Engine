@@ -406,3 +406,77 @@ TEST(language_registry_chinese_and_validation) {
     CHECK(IsValidLanguageForOperation(L"zh-Hans", TransformOperation::CorrectAndRewrite, false));
     CHECK(IsValidLanguageForOperation(L"zh-Hant", TransformOperation::CorrectAndRewrite, false));
 }
+
+TEST(config_string_display_mappers) {
+    // TransformOperation mappers
+    CHECK_STREQ(OperationName(TransformOperation::Translate), L"translate");
+    CHECK_STREQ(OperationName(TransformOperation::CorrectAndRewrite), L"correct_and_rewrite");
+    CHECK_STREQ(OperationName(static_cast<TransformOperation>(999)), L"translate");
+
+    CHECK_STREQ(OperationDisplayName(TransformOperation::Translate), L"Translate");
+    CHECK_STREQ(OperationDisplayName(TransformOperation::CorrectAndRewrite), L"Correct & Rewrite");
+    CHECK_STREQ(OperationDisplayName(static_cast<TransformOperation>(999)), L"Translate");
+
+    // TranslationProfile mappers
+    CHECK_STREQ(ProfileName(TranslationProfile::Neutral), L"neutral");
+    CHECK_STREQ(ProfileName(TranslationProfile::Professional), L"professional");
+    CHECK_STREQ(ProfileName(TranslationProfile::Casual), L"casual");
+    CHECK_STREQ(ProfileName(TranslationProfile::Slang), L"slang");
+    CHECK_STREQ(ProfileName(TranslationProfile::Custom), L"custom");
+    CHECK_STREQ(ProfileName(static_cast<TranslationProfile>(999)), L"neutral");
+
+    // ProfileDisplayName for Translate operation
+    CHECK_STREQ(ProfileDisplayName(TranslationProfile::Neutral, TransformOperation::Translate), L"Neutral (natural & clear)");
+    CHECK_STREQ(ProfileDisplayName(TranslationProfile::Professional, TransformOperation::Translate), L"Professional (business / formal)");
+    CHECK_STREQ(ProfileDisplayName(TranslationProfile::Casual, TransformOperation::Translate), L"Casual (friends & family)");
+    CHECK_STREQ(ProfileDisplayName(TranslationProfile::Slang, TransformOperation::Translate), L"Slang (WhatsApp / Discord)");
+    CHECK_STREQ(ProfileDisplayName(TranslationProfile::Custom, TransformOperation::Translate), L"Custom (user-defined instructions)");
+    CHECK_STREQ(ProfileDisplayName(static_cast<TranslationProfile>(999), TransformOperation::Translate), L"Neutral (natural & clear)");
+
+    // ProfileDisplayName for CorrectAndRewrite operation
+    CHECK_STREQ(ProfileDisplayName(TranslationProfile::Neutral, TransformOperation::CorrectAndRewrite), L"Neutral (natural correction)");
+    CHECK_STREQ(ProfileDisplayName(TranslationProfile::Professional, TransformOperation::CorrectAndRewrite), L"Professional (polished & formal)");
+    CHECK_STREQ(ProfileDisplayName(TranslationProfile::Casual, TransformOperation::CorrectAndRewrite), L"Casual (friendly tone)");
+    CHECK_STREQ(ProfileDisplayName(TranslationProfile::Slang, TransformOperation::CorrectAndRewrite), L"Slang (preserve colloquial voice)");
+    CHECK_STREQ(ProfileDisplayName(TranslationProfile::Custom, TransformOperation::CorrectAndRewrite), L"Custom (user-defined instructions)");
+    CHECK_STREQ(ProfileDisplayName(static_cast<TranslationProfile>(999), TransformOperation::CorrectAndRewrite), L"Neutral (natural & clear)");
+
+    // TransformMode mappers
+    CHECK_STREQ(ModeName(TransformMode::Translate), L"translate");
+    CHECK_STREQ(ModeName(TransformMode::Rewrite), L"rewrite");
+    CHECK_STREQ(ModeName(TransformMode::Grammar), L"grammar");
+    CHECK_STREQ(ModeName(TransformMode::Professional), L"professional");
+    CHECK_STREQ(ModeName(TransformMode::Casual), L"casual");
+    CHECK_STREQ(ModeName(TransformMode::Technical), L"technical");
+    CHECK_STREQ(ModeName(static_cast<TransformMode>(999)), L"translate");
+
+    CHECK_STREQ(ModeUiLabel(TransformMode::Translate), L"Translate (Semi-Formal)");
+    CHECK_STREQ(ModeUiLabel(TransformMode::Rewrite), L"Slang / Very Casual");
+    CHECK_STREQ(ModeUiLabel(TransformMode::Grammar), L"Grammar Polish");
+    CHECK_STREQ(ModeUiLabel(TransformMode::Professional), L"Formal / Professional");
+    CHECK_STREQ(ModeUiLabel(TransformMode::Casual), L"Casual");
+    CHECK_STREQ(ModeUiLabel(TransformMode::Technical), L"Technical");
+    CHECK_STREQ(ModeUiLabel(static_cast<TransformMode>(999)), L"Translate");
+
+    // ProviderId mappers
+    CHECK_STREQ(ProviderName(ProviderId::Mock), L"mock");
+    CHECK_STREQ(ProviderName(ProviderId::Gemini), L"gemini");
+    CHECK_STREQ(ProviderName(ProviderId::OpenAI), L"openai");
+    CHECK_STREQ(ProviderName(static_cast<ProviderId>(999)), L"mock");
+
+    CHECK_STREQ(ProviderDisplayName(ProviderId::Mock), L"Mock (offline demo)");
+    CHECK_STREQ(ProviderDisplayName(ProviderId::Gemini), L"Google Gemini");
+    CHECK_STREQ(ProviderDisplayName(ProviderId::OpenAI), L"OpenAI");
+    CHECK_STREQ(ProviderDisplayName(static_cast<ProviderId>(999)), L"Mock (offline demo)");
+
+    // DefaultModelForProvider & DefaultEndpointForProvider
+    CHECK_STREQ(DefaultModelForProvider(ProviderId::Mock), L"");
+    CHECK_STREQ(DefaultModelForProvider(ProviderId::Gemini), L"gemini-3.7-flash");
+    CHECK_STREQ(DefaultModelForProvider(ProviderId::OpenAI), L"gpt-5.6-luna");
+    CHECK_STREQ(DefaultModelForProvider(static_cast<ProviderId>(999)), L"");
+
+    CHECK_STREQ(DefaultEndpointForProvider(ProviderId::Mock), L"");
+    CHECK_STREQ(DefaultEndpointForProvider(ProviderId::Gemini), L"https://generativelanguage.googleapis.com/v1beta");
+    CHECK_STREQ(DefaultEndpointForProvider(ProviderId::OpenAI), L"https://api.openai.com/v1/responses");
+    CHECK_STREQ(DefaultEndpointForProvider(static_cast<ProviderId>(999)), L"");
+}
