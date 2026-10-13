@@ -706,20 +706,42 @@ bool SmartPasteManager::IsSourceCode(std::wstring_view text, bool isEditorContex
     }
 
     // 7. SQL queries
-    auto startsWithCi = [](std::wstring_view s, std::wstring_view prefix) {
+    auto fastToUpper = [](wchar_t c) {
+        if (c >= L'a' && c <= L'z') return static_cast<wchar_t>(c - (L'a' - L'A'));
+        if (c < 128) return c;
+        return static_cast<wchar_t>(std::towupper(c));
+    };
+    auto startsWithCi = [&](std::wstring_view s, std::wstring_view prefix) {
         if (s.size() < prefix.size()) return false;
         for (size_t i = 0; i < prefix.size(); ++i) {
-            if (std::towupper(s[i]) != std::towupper(prefix[i])) return false;
+            if (fastToUpper(s[i]) != prefix[i]) return false;
         }
         return true;
     };
     if (startsWithCi(trimmed, L"SELECT ") || startsWithCi(trimmed, L"INSERT INTO ") ||
         startsWithCi(trimmed, L"CREATE TABLE ") || startsWithCi(trimmed, L"UPDATE ")) {
-        std::wstring upper;
-        upper.reserve(trimmed.size());
-        for (wchar_t c : trimmed) upper.push_back(static_cast<wchar_t>(std::towupper(c)));
-        if (upper.find(L" FROM ") != std::wstring::npos || upper.find(L" WHERE ") != std::wstring::npos ||
-            upper.find(L" VALUES ") != std::wstring::npos || upper.find(L" SET ") != std::wstring::npos) {
+        auto containsCi = [&](std::wstring_view haystack, std::wstring_view needle) {
+            if (needle.empty()) return true;
+            if (haystack.size() < needle.size()) return false;
+            const wchar_t first = needle[0];
+            const size_t maxPos = haystack.size() - needle.size();
+            for (size_t i = 0; i <= maxPos; ++i) {
+                if (fastToUpper(haystack[i]) == first) {
+                    bool match = true;
+                    for (size_t j = 1; j < needle.size(); ++j) {
+                        if (fastToUpper(haystack[i + j]) != needle[j]) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match) return true;
+                }
+            }
+            return false;
+        };
+
+        if (containsCi(trimmed, L" FROM ") || containsCi(trimmed, L" WHERE ") ||
+            containsCi(trimmed, L" VALUES ") || containsCi(trimmed, L" SET ")) {
             return true;
         }
     }
