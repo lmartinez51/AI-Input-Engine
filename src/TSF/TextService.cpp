@@ -664,29 +664,7 @@ HRESULT TextService::SetCompositionTextFull(TfEditCookie ec, const std::wstring&
         // document is not the TSF range store, so range SetText is a no-op.
         // Replace the composition content by collapsing to its start and
         // inserting the new text through the insert-at-selection interface.
-        ITfRange* pInserted = nullptr;
-        hr = pRange->Collapse(ec, TF_ANCHOR_START);
-        if (SUCCEEDED(hr)) {
-            TF_SELECTION sel{};
-            sel.range = pRange;
-            sel.style.ase = TF_AE_START;
-            sel.style.fInterimChar = FALSE;
-            hr = focusContext_->SetSelection(ec, 1, &sel);
-        }
-        ITfInsertAtSelection* pInsert = nullptr;
-        if (SUCCEEDED(hr)) {
-            hr = focusContext_->QueryInterface(IID_ITfInsertAtSelection,
-                                               reinterpret_cast<void**>(&pInsert));
-        }
-        if (SUCCEEDED(hr) && pInsert) {
-            hr = pInsert->InsertTextAtSelection(ec, 0, text.data(), static_cast<LONG>(text.size()),
-                                                &pInserted);
-            pInsert->Release();
-        }
-        if (SUCCEEDED(hr) && pInserted) {
-            SetDisplayAttribute(ec, pInserted);
-            pInserted->Release();
-        }
+        hr = InsertTextAtAnchor(ec, pRange, TF_ANCHOR_START, text);
         pRange->Release();
         return hr;
     }
@@ -712,29 +690,7 @@ HRESULT TextService::AppendCompositionText(TfEditCookie ec, const std::wstring& 
     }
     if (compServices_) {
         // Owner-protocol context: collapse to END and insert delta
-        ITfRange* pInserted = nullptr;
-        hr = pRange->Collapse(ec, TF_ANCHOR_END);
-        if (SUCCEEDED(hr)) {
-            TF_SELECTION sel{};
-            sel.range = pRange;
-            sel.style.ase = TF_AE_END;
-            sel.style.fInterimChar = FALSE;
-            hr = focusContext_->SetSelection(ec, 1, &sel);
-        }
-        ITfInsertAtSelection* pInsert = nullptr;
-        if (SUCCEEDED(hr)) {
-            hr = focusContext_->QueryInterface(IID_ITfInsertAtSelection,
-                                               reinterpret_cast<void**>(&pInsert));
-        }
-        if (SUCCEEDED(hr) && pInsert) {
-            hr = pInsert->InsertTextAtSelection(ec, 0, delta.data(), static_cast<LONG>(delta.size()),
-                                                &pInserted);
-            pInsert->Release();
-        }
-        if (SUCCEEDED(hr) && pInserted) {
-            SetDisplayAttribute(ec, pInserted);
-            pInserted->Release();
-        }
+        hr = InsertTextAtAnchor(ec, pRange, TF_ANCHOR_END, delta);
         pRange->Release();
         return hr;
     }
@@ -749,6 +705,34 @@ HRESULT TextService::AppendCompositionText(TfEditCookie ec, const std::wstring& 
         SetDisplayAttribute(ec, pRange);
     }
     pRange->Release();
+    return hr;
+}
+
+HRESULT TextService::InsertTextAtAnchor(TfEditCookie ec, ITfRange* pRange, TfAnchor anchor,
+                                        const std::wstring& text) {
+    ITfRange* pInserted = nullptr;
+    HRESULT hr = pRange->Collapse(ec, anchor);
+    if (SUCCEEDED(hr)) {
+        TF_SELECTION sel{};
+        sel.range = pRange;
+        sel.style.ase = (anchor == TF_ANCHOR_START) ? TF_AE_START : TF_AE_END;
+        sel.style.fInterimChar = FALSE;
+        hr = focusContext_->SetSelection(ec, 1, &sel);
+    }
+    ITfInsertAtSelection* pInsert = nullptr;
+    if (SUCCEEDED(hr)) {
+        hr = focusContext_->QueryInterface(IID_ITfInsertAtSelection,
+                                           reinterpret_cast<void**>(&pInsert));
+    }
+    if (SUCCEEDED(hr) && pInsert) {
+        hr = pInsert->InsertTextAtSelection(ec, 0, text.data(), static_cast<LONG>(text.size()),
+                                            &pInserted);
+        pInsert->Release();
+    }
+    if (SUCCEEDED(hr) && pInserted) {
+        SetDisplayAttribute(ec, pInserted);
+        pInserted->Release();
+    }
     return hr;
 }
 
