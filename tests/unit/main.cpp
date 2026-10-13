@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <cstdint>
 #include <cstdio>
 
 #include <psapi.h>
@@ -58,7 +59,11 @@ static LONG WINAPI CrashFilter(_EXCEPTION_POINTERS* ep) {
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
+#if defined(__MINGW32__) || defined(__MINGW64__)
+int main() {
+#else
 int wmain() {
+#endif
     SetUnhandledExceptionFilter(&CrashFilter);
     // The unit tests exercise console output; ensure UTF-8 output works for
     // any wide strings printed by failure messages.
