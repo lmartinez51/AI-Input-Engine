@@ -190,3 +190,45 @@ TEST(pipeline_rejects_without_provider) {
     req.text = L"hola";
     CHECK_EQ(pipeline.Submit(req, [](TranslationResult) {}), 0);
 }
+
+namespace {
+class ThrowingProvider : public ITranslationProvider {
+public:
+    std::wstring_view Name() const override { return L"throwing"; }
+    std::wstring_view DisplayName() const override { return L"Throwing"; }
+    bool RequiresNetwork() const override { return false; }
+    ProviderStatus Status() const override { return {ProviderStatus::State::Ready, L""}; }
+    void CancelAll() override {}
+
+    void Translate(TranslationRequest request, TranslationCallback callback) override {
+        (void)request;
+        (void)callback;
+        throw std::runtime_error("simulated provider error");
+    }
+};
+} // namespace
+
+TEST(pipeline_handles_provider_exception) {
+    auto provider = std::make_shared<ThrowingProvider>();
+    auto cache = std::make_shared<TranslationCache>(100);
+    TranslationPipeline pipeline(provider, cache, 30000);
+
+    TranslationRequest req;
+    req.text = L"test exception";
+    req.commitAuthority = CommitAuthority::Allowed;
+
+    TranslationResult got;
+    bool callbackCalled = false;
+    const int64_t id = pipeline.Submit(req, [&](TranslationResult r) {
+        got = std::move(r);
+        callbackCalled = true;
+    });
+
+    CHECK_GT(id, 0);
+    CHECK(callbackCalled);
+    CHECK(!got.ok);
+    CHECK_STREQ(got.error, L"provider threw");
+    CHECK_STREQ(got.errorDetail, L"simulated provider error");
+    CHECK_EQ(pipeline.PendingAllowed(), 0u);
+    CHECK_EQ(pipeline.TotalPending(), 0u);
+}
