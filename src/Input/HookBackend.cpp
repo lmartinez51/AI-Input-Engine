@@ -453,9 +453,12 @@ bool HookBackend::VerifyFinal(const std::wstring& base, const std::wstring& repl
 std::optional<std::wstring> HookBackend::ReadFocusedText() {
     const HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     const bool comInited = SUCCEEDED(hr);
+    const bool alreadyInitedSta = (hr == RPC_E_CHANGED_MODE);
+    const bool canUseCom = comInited || alreadyInitedSta;
+
     std::optional<std::wstring> result;
     IUIAutomation* uia = nullptr;
-    if (comInited &&
+    if (canUseCom &&
         SUCCEEDED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
                                    IID_IUIAutomation, reinterpret_cast<void**>(&uia)))) {
         IUIAutomationElement* el = nullptr;
