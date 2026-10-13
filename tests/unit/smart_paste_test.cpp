@@ -180,6 +180,39 @@ TEST(smart_paste_empty_clipboard) {
     CHECK(h.status->messages.back().find(L"empty") != std::wstring::npos);
 }
 
+TEST(read_unicode_text_failure_empty_clipboard) {
+    // When the clipboard is emptied, GetClipboardData(CF_UNICODETEXT) fails (returns nullptr).
+    if (OpenClipboard(nullptr)) {
+        EmptyClipboard();
+        CloseClipboard();
+    }
+
+    std::wstring outText = L"initial_text";
+    DWORD outSeq = 0;
+    const DWORD expectedSeqBeforeRead = GetClipboardSequenceNumber();
+
+    const bool success = ClipboardHelper::ReadUnicodeText(outText, outSeq, nullptr);
+    CHECK(!success);
+    CHECK_EQ(outSeq, expectedSeqBeforeRead);
+    CHECK_EQ(outText, L"initial_text");
+}
+
+TEST(read_unicode_text_failure_open_clipboard_locked) {
+    // Hold clipboard open so OpenClipboardWithRetry fails inside ReadUnicodeText
+    if (OpenClipboard(nullptr)) {
+        std::wstring outText = L"initial_text";
+        DWORD outSeq = 0;
+        const DWORD expectedSeqBeforeRead = GetClipboardSequenceNumber();
+
+        const bool success = ClipboardHelper::ReadUnicodeText(outText, outSeq, nullptr);
+        CHECK(!success);
+        CHECK_EQ(outSeq, expectedSeqBeforeRead);
+        CHECK_EQ(outText, L"initial_text");
+
+        CloseClipboard();
+    }
+}
+
 TEST(smart_paste_unicode_text) {
     SmartPasteTestHarness h;
     const std::wstring unicodeInput = L"¿Cómo estás? München — 東京 日本";
