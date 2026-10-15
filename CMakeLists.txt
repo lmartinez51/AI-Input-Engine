@@ -134,6 +134,7 @@ add_executable(aiie_unit_tests
     tests/unit/diagnostics_test.cpp
     tests/unit/logging_test.cpp
     tests/unit/speculative_test.cpp
+    tests/unit/dispatcher_test.cpp
     tests/unit/speculative_phase2_sim.cpp
     tests/unit/trigger_optimizer_sim.cpp
     src/UI/SettingsDialog.h
@@ -141,9 +142,7 @@ add_executable(aiie_unit_tests
     src/UI/DiagnosticsWindow.h
     src/UI/DiagnosticsWindow.cpp
 )
-target_link_libraries(aiie_unit_tests PRIVATE aiie_core shell32 comctl32 ole32 uuid dbghelp psapi)
-target_link_options(aiie_unit_tests PRIVATE -mconsole -static-libgcc -static-libstdc++ -static)
-set_target_properties(aiie_unit_tests PROPERTIES WIN32_EXECUTABLE OFF)
+target_link_libraries(aiie_unit_tests PRIVATE aiie_core shell32 comctl32 ole32 uuid dbghelp)
 target_include_directories(aiie_unit_tests PRIVATE tests)
 add_test(NAME unit_tests COMMAND aiie_unit_tests)
 
