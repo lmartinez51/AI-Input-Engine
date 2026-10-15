@@ -132,6 +132,7 @@ add_executable(aiie_unit_tests
     tests/unit/settings_test.cpp
     tests/unit/smart_paste_test.cpp
     tests/unit/diagnostics_test.cpp
+    tests/unit/logging_test.cpp
     tests/unit/speculative_test.cpp
     tests/unit/speculative_phase2_sim.cpp
     tests/unit/trigger_optimizer_sim.cpp
