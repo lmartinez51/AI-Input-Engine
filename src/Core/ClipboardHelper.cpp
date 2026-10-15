@@ -510,14 +510,21 @@ bool ClipboardHelper::ExecuteSafePasteAndRestore(HWND targetHwnd,
         return false;
     }
 
-    // Step 4: Bounded synchronization wait.
+    // Step 4: Adaptive synchronization wait.
     // Allow the target application message loop to receive WM_KEYDOWN/WM_PASTE and
     // fetch the clipboard data before we restore the original snapshot.
     const auto tStart = std::chrono::steady_clock::now();
-    const auto tDeadline = tStart + timeout;
+    const auto maxWait = std::min(timeout, std::chrono::milliseconds(50));
+    const auto tDeadline = tStart + maxWait;
 
-    // Small initial yield to let the target OS input pipeline dispatch the paste
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    // Adaptive micro-polling yield loop to allow OS input queue dispatch while checking for clipboard sequence changes.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    while (std::chrono::steady_clock::now() < tDeadline) {
+        if (GetClipboardSequenceNumber() != tempSequence) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 
     // Step 5: Restore original clipboard IF sequence still matches temporary sequence
     const bool restored = RestoreIfSequenceMatches(tempSequence, originalText, nullptr);
