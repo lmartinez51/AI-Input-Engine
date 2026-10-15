@@ -219,6 +219,38 @@ TEST(config_corrupt_file_keeps_defaults) {
     std::filesystem::remove(path);
 }
 
+TEST(config_load_json_parse_exception_handling) {
+    const std::vector<std::string> malformed_json_cases = {
+        "{ not valid json",
+        "{\"enabled\": true,",
+        "{\"provider\": \"gemini\", \"debounceMs\": }",
+        "tru",
+        "0123",
+        "[1, 2,]",
+        "\"unclosed string",
+        "{\"key\": undefined}"
+    };
+
+    for (size_t i = 0; i < malformed_json_cases.size(); ++i) {
+        const std::filesystem::path path(TempConfigPath() + L".parse_error_" + std::to_wstring(i));
+        {
+            std::ofstream f(path, std::ios::binary);
+            f << malformed_json_cases[i];
+        }
+
+        ConfigStore store(path);
+        // Ensure Load returns false when json::Parse throws json::JsonError
+        CHECK(!store.Load());
+        // Verify defaults remain intact
+        const AppConfig& cfg = store.Get();
+        CHECK(cfg.enabled);
+        CHECK_EQ(cfg.debounceMs, 500);
+        CHECK_EQ(cfg.provider, ProviderId::Mock);
+
+        std::filesystem::remove(path);
+    }
+}
+
 TEST(config_unknown_fields_ignored) {
     const std::filesystem::path path(TempConfigPath() + L".unknown");
     {
