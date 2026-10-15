@@ -19,6 +19,23 @@ namespace aiie {
 
 namespace {
 
+// Sleeps for `ms` milliseconds in small increments, returning false immediately if
+// cancelled or shutting down.
+bool InterruptibleSleep(int ms, const std::shared_ptr<std::atomic<bool>>& cancelled,
+                        const std::atomic<bool>& shutdown) {
+    constexpr int kStepMs = 10;
+    int elapsed = 0;
+    while (elapsed < ms) {
+        if ((cancelled && cancelled->load()) || shutdown.load()) {
+            return false;
+        }
+        const int sleepChunk = std::min(kStepMs, ms - elapsed);
+        std::this_thread::sleep_for(std::chrono::milliseconds(sleepChunk));
+        elapsed += sleepChunk;
+    }
+    return !((cancelled && cancelled->load()) || shutdown.load());
+}
+
 // Extracts the host portion ("host[:port]") from a full https URL.
 std::wstring HostFromUrl(const std::wstring& url) {
     std::wstring host = url;
@@ -858,7 +875,11 @@ TranslationResult OpenAIProvider::ExecuteOne(const TranslationRequest& req,
             Logger::Instance().Warn(cat::Translation, L"OpenAI HTTP error (attempt {}/{}): {}",
                                     attempts, maxAttempts, httpError);
             if (attempts < maxAttempts) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(500 * attempts));
+                if (!InterruptibleSleep(500 * attempts, cancelled, shutdown_)) {
+                    res.ok = false;
+                    res.error = L"Request cancelled";
+                    return res;
+                }
                 continue;
             }
             res.ok = false;
@@ -914,7 +935,11 @@ TranslationResult OpenAIProvider::ExecuteOne(const TranslationRequest& req,
 
         // Retry on 429 (rate limit) or 5xx (server error)
         if ((statusCode == 429 || statusCode >= 500) && attempts < maxAttempts) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1000 * attempts));
+            if (!InterruptibleSleep(1000 * attempts, cancelled, shutdown_)) {
+                res.ok = false;
+                res.error = L"Request cancelled";
+                return res;
+            }
             continue;
         }
 
