@@ -77,6 +77,8 @@ private:
     HRESULT SetCompositionTextFull(TfEditCookie ec, const std::wstring& text);
     HRESULT AppendCompositionText(TfEditCookie ec, const std::wstring& delta);
     HRESULT TruncateCompositionText(TfEditCookie ec, size_t trimCount);
+    HRESULT InsertTextAtAnchor(TfEditCookie ec, ITfRange* pRange, TfAnchor anchor,
+                                const std::wstring& text);
     HRESULT StartComposition(TfEditCookie ec, ITfRange* pRange, ITfCompositionSink* pSink,
                              ITfComposition** ppComposition);
     void TerminateComposition(ITfCompositionView* pView);
