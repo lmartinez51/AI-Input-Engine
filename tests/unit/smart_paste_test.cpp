@@ -180,6 +180,39 @@ TEST(smart_paste_empty_clipboard) {
     CHECK(h.status->messages.back().find(L"empty") != std::wstring::npos);
 }
 
+TEST(read_unicode_text_failure_empty_clipboard) {
+    // When the clipboard is emptied, GetClipboardData(CF_UNICODETEXT) fails (returns nullptr).
+    if (OpenClipboard(nullptr)) {
+        EmptyClipboard();
+        CloseClipboard();
+    }
+
+    std::wstring outText = L"initial_text";
+    DWORD outSeq = 0;
+    const DWORD expectedSeqBeforeRead = GetClipboardSequenceNumber();
+
+    const bool success = ClipboardHelper::ReadUnicodeText(outText, outSeq, nullptr);
+    CHECK(!success);
+    CHECK_EQ(outSeq, expectedSeqBeforeRead);
+    CHECK_EQ(outText, L"initial_text");
+}
+
+TEST(read_unicode_text_failure_open_clipboard_locked) {
+    // Hold clipboard open so OpenClipboardWithRetry fails inside ReadUnicodeText
+    if (OpenClipboard(nullptr)) {
+        std::wstring outText = L"initial_text";
+        DWORD outSeq = 0;
+        const DWORD expectedSeqBeforeRead = GetClipboardSequenceNumber();
+
+        const bool success = ClipboardHelper::ReadUnicodeText(outText, outSeq, nullptr);
+        CHECK(!success);
+        CHECK_EQ(outSeq, expectedSeqBeforeRead);
+        CHECK_EQ(outText, L"initial_text");
+
+        CloseClipboard();
+    }
+}
+
 TEST(smart_paste_unicode_text) {
     SmartPasteTestHarness h;
     const std::wstring unicodeInput = L"¿Cómo estás? München — 東京 日本";
@@ -1419,4 +1452,24 @@ TEST(smart_paste_ctrl_held_modifier_preservation_and_recovery) {
         CHECK(keyState[VK_RCONTROL]);
         CHECK(!keyState[VK_LCONTROL]); // Left Ctrl is completely clean and unstuck!
     }
+}
+
+TEST(smart_paste_execute_safe_paste_and_restore_latency) {
+    DWORD origSeq = 0;
+    ClipboardHelper::SetUnicodeText(L"Original clipboard content", origSeq);
+
+    const auto start = std::chrono::steady_clock::now();
+    const bool res = ClipboardHelper::ExecuteSafePasteAndRestore(
+        nullptr, L"Transformed text", L"Original clipboard content", origSeq, std::chrono::milliseconds(100));
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+
+    CHECK(res);
+    // Formerly took >= 50ms due to fixed sleep. Now completes in < 25ms in adaptive loop.
+    CHECK_LT(elapsed, 25);
+
+    std::wstring readBack;
+    DWORD finalSeq = 0;
+    CHECK(ClipboardHelper::ReadUnicodeText(readBack, finalSeq));
+    CHECK_EQ(readBack, L"Original clipboard content");
 }

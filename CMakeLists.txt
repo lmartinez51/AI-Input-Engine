@@ -5,10 +5,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+add_compile_definitions(UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+
 # Enable all warnings and treat them as errors for clean builds.
 if(MSVC)
     add_compile_options(/W4 /WX /permissive- /utf-8)
-    add_compile_definitions(UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -131,6 +132,7 @@ add_executable(aiie_unit_tests
     tests/unit/settings_test.cpp
     tests/unit/smart_paste_test.cpp
     tests/unit/diagnostics_test.cpp
+    tests/unit/logging_test.cpp
     tests/unit/speculative_test.cpp
     tests/unit/speculative_phase2_sim.cpp
     tests/unit/trigger_optimizer_sim.cpp
@@ -139,7 +141,11 @@ add_executable(aiie_unit_tests
     src/UI/DiagnosticsWindow.h
     src/UI/DiagnosticsWindow.cpp
 )
-target_link_libraries(aiie_unit_tests PRIVATE aiie_core shell32 comctl32 ole32 uuid)
+target_link_libraries(aiie_unit_tests PRIVATE aiie_core shell32 comctl32 ole32 uuid dbghelp)
+if(MINGW)
+    target_compile_options(aiie_unit_tests PRIVATE -municode)
+    target_link_options(aiie_unit_tests PRIVATE -municode -static -static-libgcc -static-libstdc++)
+endif()
 target_include_directories(aiie_unit_tests PRIVATE tests)
 add_test(NAME unit_tests COMMAND aiie_unit_tests)
 
