@@ -1,7 +1,6 @@
 #include "Core/Utf.h"
 
 #include <windows.h>
-#include <cstdint>
 
 namespace aiie::utf {
 
@@ -9,61 +8,29 @@ std::string ToUtf8(std::wstring_view w) {
     if (w.empty()) {
         return {};
     }
-    const int len = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    const int len = WideCharToMultiByte(
+        CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
     if (len <= 0) {
         return {};
     }
     std::string out(static_cast<size_t>(len), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), out.data(), len, nullptr, nullptr);
+    WideCharToMultiByte(
+        CP_UTF8, 0, w.data(), static_cast<int>(w.size()), out.data(), len, nullptr, nullptr);
     return out;
 }
 
 std::wstring FromUtf8(std::string_view s) {
-    std::wstring out;
-    out.reserve(s.size());
-    for (size_t i = 0; i < s.size();) {
-        const unsigned char b = static_cast<unsigned char>(s[i]);
-        uint32_t cp;
-        size_t len;
-        if (b < 0x80) {
-            cp = b;
-            len = 1;
-        } else if ((b & 0xE0) == 0xC0) {
-            cp = b & 0x1F;
-            len = 2;
-        } else if ((b & 0xF0) == 0xE0) {
-            cp = b & 0x0F;
-            len = 3;
-        } else if ((b & 0xF8) == 0xF0) {
-            cp = b & 0x07;
-            len = 4;
-        } else {
-            cp = 0xFFFD;
-            len = 1;
-        }
-        if (i + len > s.size()) {
-            cp = 0xFFFD;
-            len = 1;
-        } else {
-            for (size_t k = 1; k < len; ++k) {
-                const unsigned char cc = static_cast<unsigned char>(s[i + k]);
-                if ((cc & 0xC0) != 0x80) {
-                    cp = 0xFFFD;
-                    len = 1;
-                    break;
-                }
-                cp = (cp << 6) | (cc & 0x3F);
-            }
-        }
-        if (cp <= 0xFFFF) {
-            out.push_back(static_cast<wchar_t>(cp));
-        } else {
-            cp -= 0x10000;
-            out.push_back(static_cast<wchar_t>(0xD800 | (cp >> 10)));
-            out.push_back(static_cast<wchar_t>(0xDC00 | (cp & 0x3FF)));
-        }
-        i += len;
+    if (s.empty()) {
+        return {};
     }
+    const int len = MultiByteToWideChar(
+        CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    if (len <= 0) {
+        return {};
+    }
+    std::wstring out(static_cast<size_t>(len), L'\0');
+    MultiByteToWideChar(
+        CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), len);
     return out;
 }
 
