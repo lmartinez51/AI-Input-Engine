@@ -81,8 +81,19 @@ bool SmartPasteManager::IsEditorExecutable(std::wstring_view exeName) {
         L"pwsh.exe", L"alacritty.exe", L"kitty.exe", L"wezterm-gui.exe", L"neovide.exe"
     };
     for (auto editor : kEditorExes) {
-        if (EqualsIgnoreCase(exeName, editor)) {
-            return true;
+        if (exeName.size() == editor.size()) {
+            bool match = true;
+            for (size_t i = 0; i < exeName.size(); ++i) {
+                wchar_t ca = exeName[i];
+                wchar_t cb = editor[i];
+                if (ca != cb && static_cast<wchar_t>(std::towlower(ca)) != cb) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                return true;
+            }
         }
     }
     return false;
