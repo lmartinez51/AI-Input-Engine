@@ -141,13 +141,18 @@ add_executable(aiie_unit_tests
     src/UI/DiagnosticsWindow.h
     src/UI/DiagnosticsWindow.cpp
 )
-target_link_libraries(aiie_unit_tests PRIVATE aiie_core shell32 comctl32 ole32 uuid dbghelp)
-if(MINGW)
-    target_compile_options(aiie_unit_tests PRIVATE -municode)
-    target_link_options(aiie_unit_tests PRIVATE -municode -static -static-libgcc -static-libstdc++)
-endif()
+target_link_libraries(aiie_unit_tests PRIVATE aiie_core shell32 comctl32 ole32 uuid dbghelp psapi)
+target_link_options(aiie_unit_tests PRIVATE -mconsole -static-libgcc -static-libstdc++ -static)
+set_target_properties(aiie_unit_tests PROPERTIES WIN32_EXECUTABLE OFF)
 target_include_directories(aiie_unit_tests PRIVATE tests)
 add_test(NAME unit_tests COMMAND aiie_unit_tests)
+
+add_executable(aiie_benchmark_sql
+    tools/benchmark_sql.cpp
+)
+target_link_libraries(aiie_benchmark_sql PRIVATE aiie_core shell32 comctl32 ole32 uuid dbghelp psapi)
+target_link_options(aiie_benchmark_sql PRIVATE -mconsole -static-libgcc -static-libstdc++ -static)
+set_target_properties(aiie_benchmark_sql PROPERTIES WIN32_EXECUTABLE OFF)
 
 # ---------------------------------------------------------------------------
 # Integration test: drives a real Notepad instance through the hook engine.
