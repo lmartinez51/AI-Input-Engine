@@ -52,14 +52,27 @@ std::wstring SmartPasteManager::GetProcessExecutableName(DWORD processId) {
     return {};
 }
 
+namespace {
+
+inline wchar_t ToLowerAscii(wchar_t c) {
+    if (c >= L'A' && c <= L'Z') return c + (L'a' - L'A');
+    if (c > 127) return static_cast<wchar_t>(std::towlower(c));
+    return c;
+}
+
+inline bool EqualsIgnoreCase(std::wstring_view a, std::wstring_view b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (ToLowerAscii(a[i]) != ToLowerAscii(b[i])) return false;
+    }
+    return true;
+}
+
+} // namespace
+
 bool SmartPasteManager::IsEditorExecutable(std::wstring_view exeName) {
     if (exeName.empty()) {
         return false;
-    }
-    std::wstring lower;
-    lower.reserve(exeName.size());
-    for (wchar_t c : exeName) {
-        lower.push_back(static_cast<wchar_t>(std::towlower(c)));
     }
     static const std::vector<std::wstring_view> kEditorExes = {
         L"code.exe", L"devenv.exe", L"idea64.exe", L"clion64.exe", L"pycharm64.exe",
@@ -68,8 +81,19 @@ bool SmartPasteManager::IsEditorExecutable(std::wstring_view exeName) {
         L"pwsh.exe", L"alacritty.exe", L"kitty.exe", L"wezterm-gui.exe", L"neovide.exe"
     };
     for (auto editor : kEditorExes) {
-        if (lower == editor) {
-            return true;
+        if (exeName.size() == editor.size()) {
+            bool match = true;
+            for (size_t i = 0; i < exeName.size(); ++i) {
+                wchar_t ca = exeName[i];
+                wchar_t cb = editor[i];
+                if (ca != cb && static_cast<wchar_t>(std::towlower(ca)) != cb) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                return true;
+            }
         }
     }
     return false;
@@ -194,10 +218,21 @@ bool SmartPasteManager::IsSensitiveOrSecret(std::wstring_view text) {
         }
     }
 
-    std::wstring lowerText;
-    lowerText.reserve(text.size());
-    for (wchar_t c : text) {
-        lowerText.push_back(static_cast<wchar_t>(std::towlower(c)));
+    wchar_t stackBuffer[1024];
+    std::wstring dynamicBuffer;
+    std::wstring_view lowerText;
+
+    if (text.size() <= 1024) {
+        for (size_t i = 0; i < text.size(); ++i) {
+            stackBuffer[i] = ToLowerAscii(text[i]);
+        }
+        lowerText = std::wstring_view(stackBuffer, text.size());
+    } else {
+        dynamicBuffer.reserve(text.size());
+        for (wchar_t c : text) {
+            dynamicBuffer.push_back(ToLowerAscii(c));
+        }
+        lowerText = dynamicBuffer;
     }
 
     // 8. Authorization header structural parser (handles arbitrary whitespace, quotes, and 1-char tokens)
@@ -706,20 +741,42 @@ bool SmartPasteManager::IsSourceCode(std::wstring_view text, bool isEditorContex
     }
 
     // 7. SQL queries
-    auto startsWithCi = [](std::wstring_view s, std::wstring_view prefix) {
+    auto fastToUpper = [](wchar_t c) {
+        if (c >= L'a' && c <= L'z') return static_cast<wchar_t>(c - (L'a' - L'A'));
+        if (c < 128) return c;
+        return static_cast<wchar_t>(std::towupper(c));
+    };
+    auto startsWithCi = [&](std::wstring_view s, std::wstring_view prefix) {
         if (s.size() < prefix.size()) return false;
         for (size_t i = 0; i < prefix.size(); ++i) {
-            if (std::towupper(s[i]) != std::towupper(prefix[i])) return false;
+            if (fastToUpper(s[i]) != prefix[i]) return false;
         }
         return true;
     };
     if (startsWithCi(trimmed, L"SELECT ") || startsWithCi(trimmed, L"INSERT INTO ") ||
         startsWithCi(trimmed, L"CREATE TABLE ") || startsWithCi(trimmed, L"UPDATE ")) {
-        std::wstring upper;
-        upper.reserve(trimmed.size());
-        for (wchar_t c : trimmed) upper.push_back(static_cast<wchar_t>(std::towupper(c)));
-        if (upper.find(L" FROM ") != std::wstring::npos || upper.find(L" WHERE ") != std::wstring::npos ||
-            upper.find(L" VALUES ") != std::wstring::npos || upper.find(L" SET ") != std::wstring::npos) {
+        auto containsCi = [&](std::wstring_view haystack, std::wstring_view needle) {
+            if (needle.empty()) return true;
+            if (haystack.size() < needle.size()) return false;
+            const wchar_t first = needle[0];
+            const size_t maxPos = haystack.size() - needle.size();
+            for (size_t i = 0; i <= maxPos; ++i) {
+                if (fastToUpper(haystack[i]) == first) {
+                    bool match = true;
+                    for (size_t j = 1; j < needle.size(); ++j) {
+                        if (fastToUpper(haystack[i + j]) != needle[j]) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match) return true;
+                }
+            }
+            return false;
+        };
+
+        if (containsCi(trimmed, L" FROM ") || containsCi(trimmed, L" WHERE ") ||
+            containsCi(trimmed, L" VALUES ") || containsCi(trimmed, L" SET ")) {
             return true;
         }
     }

@@ -5,10 +5,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+add_compile_definitions(UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+
 # Enable all warnings and treat them as errors for clean builds.
 if(MSVC)
     add_compile_options(/W4 /WX /permissive- /utf-8)
-    add_compile_definitions(UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -131,6 +132,7 @@ add_executable(aiie_unit_tests
     tests/unit/settings_test.cpp
     tests/unit/smart_paste_test.cpp
     tests/unit/diagnostics_test.cpp
+    tests/unit/logging_test.cpp
     tests/unit/speculative_test.cpp
     tests/unit/dispatcher_test.cpp
     tests/unit/speculative_phase2_sim.cpp
@@ -143,6 +145,13 @@ add_executable(aiie_unit_tests
 target_link_libraries(aiie_unit_tests PRIVATE aiie_core shell32 comctl32 ole32 uuid dbghelp)
 target_include_directories(aiie_unit_tests PRIVATE tests)
 add_test(NAME unit_tests COMMAND aiie_unit_tests)
+
+add_executable(aiie_benchmark_sql
+    tools/benchmark_sql.cpp
+)
+target_link_libraries(aiie_benchmark_sql PRIVATE aiie_core shell32 comctl32 ole32 uuid dbghelp psapi)
+target_link_options(aiie_benchmark_sql PRIVATE -mconsole -static-libgcc -static-libstdc++ -static)
+set_target_properties(aiie_benchmark_sql PROPERTIES WIN32_EXECUTABLE OFF)
 
 # ---------------------------------------------------------------------------
 # Integration test: drives a real Notepad instance through the hook engine.
