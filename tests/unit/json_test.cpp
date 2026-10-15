@@ -89,3 +89,45 @@ TEST(json_missing_keys_have_defaults) {
     CHECK_EQ(v.get_int(L"nope", 7), 7);
     CHECK(v.get_bool(L"nope", true));
 }
+
+TEST(json_serialize_indent_positive) {
+    // Simple object with default indent (indent = 2)
+    json::Value obj = json::Value::MakeObject();
+    obj.set(L"key", L"value");
+    obj.set(L"num", 10);
+
+    const std::wstring serialized2 = json::Serialize(obj, 2);
+    const std::wstring expected2 = L"{\n  \"key\": \"value\",\n  \"num\": 10\n}";
+    CHECK_STREQ(serialized2, expected2);
+
+    // Verify default parameter uses indent = 2
+    const std::wstring serialized_def = json::Serialize(obj);
+    CHECK_STREQ(serialized_def, expected2);
+
+    // Custom indent (indent = 4 spaces)
+    const std::wstring serialized4 = json::Serialize(obj, 4);
+    const std::wstring expected4 = L"{\n    \"key\": \"value\",\n    \"num\": 10\n}";
+    CHECK_STREQ(serialized4, expected4);
+
+    // Nested object and array pretty printing
+    json::Value root = json::Value::MakeObject();
+    json::Value arr = json::Value::MakeArray();
+    arr.push_back(1);
+    arr.push_back(2);
+    root.set(L"arr", std::move(arr));
+    root.set(L"empty_arr", json::Value::MakeArray());
+    root.set(L"empty_obj", json::Value::MakeObject());
+
+    const std::wstring nested_serialized = json::Serialize(root, 2);
+    const std::wstring nested_expected = L"{\n  \"arr\": [\n    1,\n    2\n  ],\n  \"empty_arr\": [],\n  \"empty_obj\": {}\n}";
+    CHECK_STREQ(nested_serialized, nested_expected);
+
+    // Verify pretty printed JSON parses back into an equivalent Value structure
+    const json::Value parsed = json::Parse(nested_serialized);
+    CHECK(parsed.is_object());
+    CHECK_EQ(parsed.find(L"arr")->as_array().size(), 2u);
+    CHECK_EQ(parsed.find(L"arr")->as_array()[0].as_int(), 1);
+    CHECK_EQ(parsed.find(L"arr")->as_array()[1].as_int(), 2);
+    CHECK(parsed.find(L"empty_arr")->as_array().empty());
+    CHECK(parsed.find(L"empty_obj")->as_object().empty());
+}
