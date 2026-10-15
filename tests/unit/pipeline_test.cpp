@@ -203,7 +203,7 @@ public:
     void Translate(TranslationRequest request, TranslationCallback callback) override {
         (void)request;
         (void)callback;
-        throw std::runtime_error("simulated provider exception");
+        throw std::runtime_error("simulated provider error");
     }
 };
 } // namespace
@@ -214,12 +214,11 @@ TEST(pipeline_handles_provider_exception) {
     TranslationPipeline pipeline(provider, cache, 30000);
 
     TranslationRequest req;
-    req.text = L"hola";
-    req.sourceLanguage = L"es";
-    req.targetLanguage = L"en";
+    req.text = L"test exception";
+    req.commitAuthority = CommitAuthority::Allowed;
 
-    bool callbackCalled = false;
     TranslationResult got;
+    bool callbackCalled = false;
     const int64_t id = pipeline.Submit(req, [&](TranslationResult r) {
         got = std::move(r);
         callbackCalled = true;
@@ -229,6 +228,7 @@ TEST(pipeline_handles_provider_exception) {
     CHECK(callbackCalled);
     CHECK(!got.ok);
     CHECK_STREQ(got.error, L"provider threw");
-    CHECK_STREQ(got.errorDetail, L"simulated provider exception");
+    CHECK_STREQ(got.errorDetail, L"simulated provider error");
+    CHECK_EQ(pipeline.PendingAllowed(), 0u);
     CHECK_EQ(pipeline.TotalPending(), 0u);
 }

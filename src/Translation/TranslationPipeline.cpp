@@ -116,8 +116,9 @@ int64_t TranslationPipeline::Submit(TranslationRequest request, TranslationCallb
     }
 
     auto alive = alive_;
+    TranslationRequest reqCopy = request;
+    TranslationCallback cbCopy = callback;
     try {
-        TranslationRequest reqCopy = request;
         provider_->Translate(std::move(request),
                              [this, alive, reqCopy = std::move(reqCopy), callback = std::move(callback)](TranslationResult result) mutable {
             if (alive && alive->load()) {
@@ -131,7 +132,7 @@ int64_t TranslationPipeline::Submit(TranslationRequest request, TranslationCallb
         result.ok = false;
         result.error = L"provider threw";
         result.errorDetail = utf::FromUtf8(e.what());
-        Finish(request, result, std::move(callback));
+        Finish(reqCopy, result, std::move(cbCopy));
     }
     return id;
 }
