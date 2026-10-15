@@ -444,7 +444,11 @@ bool HookBackend::VerifyFinal(const std::wstring& base, const std::wstring& repl
             InjectBackspaces(extra);
             continue;
         }
-        Logger::Instance().Error(cat::Input, L"commit verify: got '{}', expected '{}'", text, expected);
+        if (Logger::Instance().LogRawText()) {
+            Logger::Instance().Error(cat::Input, L"commit verify: got '{}', expected '{}'", text, expected);
+        } else {
+            Logger::Instance().Error(cat::Input, L"commit verify: document content mismatch");
+        }
         return false;
     }
     return false;
