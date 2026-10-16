@@ -8,6 +8,8 @@
 #include <windows.h>
 #include <winhttp.h>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <thread>
 
@@ -66,6 +68,23 @@ std::wstring StatusErrorMessage(DWORD status) {
     }
 }
 
+// Sleeps for `ms` milliseconds in small increments, returning false immediately if
+// cancelled or shutting down.
+bool InterruptibleSleep(int ms, const std::shared_ptr<std::atomic<bool>>& cancelled,
+                        const std::atomic<bool>& shutdown) {
+    constexpr int kStepMs = 10;
+    int elapsed = 0;
+    while (elapsed < ms) {
+        if ((cancelled && cancelled->load()) || shutdown.load()) {
+            return false;
+        }
+        const int sleepChunk = std::min(kStepMs, ms - elapsed);
+        std::this_thread::sleep_for(std::chrono::milliseconds(sleepChunk));
+        elapsed += sleepChunk;
+    }
+    return !((cancelled && cancelled->load()) || shutdown.load());
+}
+
 } // namespace
 
 GeminiProvider::GeminiProvider(GeminiConfig config) : config_(std::move(config)) {
@@ -78,6 +97,45 @@ GeminiProvider::~GeminiProvider() {
     if (worker_.joinable()) {
         worker_.join();
     }
+    ResetConnection();
+}
+
+bool GeminiProvider::EnsureConnection(const std::wstring& host, int timeoutMs, std::wstring& outError) {
+    outError.clear();
+    if (!session_) {
+        session_ = WinHttpOpen(L"AIInputEngine/0.1", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                               WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        if (!session_) {
+            outError = std::format(L"WinHttpOpen error {}", GetLastError());
+            return false;
+        }
+        WinHttpSetTimeouts(session_, timeoutMs / 4, timeoutMs / 2, timeoutMs, timeoutMs);
+    }
+    if (!connect_ || connectedHost_ != host) {
+        if (connect_) {
+            WinHttpCloseHandle(connect_);
+            connect_ = nullptr;
+        }
+        connect_ = WinHttpConnect(session_, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
+        if (!connect_) {
+            outError = std::format(L"WinHttpConnect error {}", GetLastError());
+            return false;
+        }
+        connectedHost_ = host;
+    }
+    return true;
+}
+
+void GeminiProvider::ResetConnection() {
+    if (connect_) {
+        WinHttpCloseHandle(connect_);
+        connect_ = nullptr;
+    }
+    if (session_) {
+        WinHttpCloseHandle(session_);
+        session_ = nullptr;
+    }
+    connectedHost_.clear();
 }
 
 ProviderStatus GeminiProvider::Status() const {
@@ -181,29 +239,20 @@ const std::wstring url = std::format(L"{}/models/{}:generateContent",
             return false;
         }
         if (attempt > 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(500) * (1 << (attempt - 1)));
-            if (p.cancelled->load()) {
+            const int sleepMs = 500 * (1 << (attempt - 1));
+            if (!InterruptibleSleep(sleepMs, p.cancelled, shutdown_)) {
                 out.error = L"cancelled";
                 out.errorDetail = L"request cancelled";
                 return false;
             }
         }
 
-        HINTERNET session = WinHttpOpen(L"AIInputEngine/0.1", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                                        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-        if (!session) {
-            out.error = L"WinHTTP session failed";
-            out.errorDetail = std::format(L"WinHttpOpen error {}", GetLastError());
-            continue; // retryable
-        }
-// The endpoint may include a path prefix; connect only to the host.
         const std::wstring host = HostFromUrl(config_.endpoint);
-        HINTERNET connect = WinHttpConnect(session, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
-        if (!connect) {
+        std::wstring connErr;
+        if (!EnsureConnection(host, config_.timeoutMs, connErr)) {
             out.error = L"WinHTTP connect failed";
-            out.errorDetail = std::format(L"WinHttpConnect error {}", GetLastError());
-            WinHttpCloseHandle(session);
-            continue;
+            out.errorDetail = connErr;
+            continue; // retryable
         }
 
         // Authentication via the x-goog-api-key header (supported by the
@@ -212,15 +261,14 @@ const std::wstring url = std::format(L"{}/models/{}:generateContent",
         const std::wstring headers =
             L"Content-Type: application/json\r\nx-goog-api-key: " + key + L"\r\n";
 
-        HINTERNET requestHandle = WinHttpOpenRequest(connect, L"POST",
+        HINTERNET requestHandle = WinHttpOpenRequest(static_cast<HINTERNET>(connect_), L"POST",
                                                      PathFromUrl(url).c_str(),
                                                      nullptr, WINHTTP_NO_REFERER,
                                                      WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
         if (!requestHandle) {
+            ResetConnection();
             out.error = L"WinHTTP request failed";
             out.errorDetail = std::format(L"WinHttpOpenRequest error {}", GetLastError());
-            WinHttpCloseHandle(connect);
-            WinHttpCloseHandle(session);
             continue;
         }
 
@@ -233,12 +281,11 @@ const std::wstring url = std::format(L"{}/models/{}:generateContent",
                                        static_cast<DWORD>(utf8Body.size()),
                                        static_cast<DWORD>(utf8Body.size()), 0);
         if (!sent) {
+            ResetConnection();
             out.error = L"Network error";
             out.errorDetail = std::format(L"WinHttpSendRequest error {} ({})", GetLastError(),
                                           p.cancelled->load() ? L"cancelled" : L"io");
             WinHttpCloseHandle(requestHandle);
-            WinHttpCloseHandle(connect);
-            WinHttpCloseHandle(session);
             if (p.cancelled->load()) {
                 out.error = L"cancelled";
             }
@@ -246,11 +293,10 @@ const std::wstring url = std::format(L"{}/models/{}:generateContent",
         }
 
         if (!WinHttpReceiveResponse(requestHandle, nullptr)) {
+            ResetConnection();
             out.error = L"Network error";
             out.errorDetail = std::format(L"WinHttpReceiveResponse error {}", GetLastError());
             WinHttpCloseHandle(requestHandle);
-            WinHttpCloseHandle(connect);
-            WinHttpCloseHandle(session);
             continue;
         }
 
@@ -260,27 +306,18 @@ const std::wstring url = std::format(L"{}/models/{}:generateContent",
                             WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize, WINHTTP_NO_HEADER_INDEX);
 
         std::string response;
+        std::array<char, 8192> chunkBuf;
         DWORD available = 0;
-        do {
-            if (!WinHttpQueryDataAvailable(requestHandle, &available)) {
-                break;
-            }
-            if (available == 0) {
-                break;
-            }
-            std::vector<char> chunk(available);
+        while (WinHttpQueryDataAvailable(requestHandle, &available) && available > 0) {
+            const DWORD toRead = std::min<DWORD>(available, static_cast<DWORD>(chunkBuf.size()));
             DWORD read = 0;
-            if (!WinHttpReadData(requestHandle, chunk.data(), available, &read)) {
+            if (!WinHttpReadData(requestHandle, chunkBuf.data(), toRead, &read) || read == 0) {
                 break;
             }
-            if (read > 0) {
-                response.append(chunk.data(), read);
-            }
-        } while (available > 0);
+            response.append(chunkBuf.data(), read);
+        }
 
         WinHttpCloseHandle(requestHandle);
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
 
         lastStatus = status;
         if (status == 200) {
@@ -402,18 +439,16 @@ bool GeminiProvider::TestConnection(const std::wstring& endpoint, const std::wst
                         WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize, WINHTTP_NO_HEADER_INDEX);
 
     std::string response;
+    std::array<char, 8192> chunkBuf;
     DWORD available = 0;
-    do {
-        if (!WinHttpQueryDataAvailable(requestHandle, &available) || available == 0) {
-            break;
-        }
-        std::vector<char> chunk(available);
+    while (WinHttpQueryDataAvailable(requestHandle, &available) && available > 0) {
+        const DWORD toRead = std::min<DWORD>(available, static_cast<DWORD>(chunkBuf.size()));
         DWORD read = 0;
-        if (!WinHttpReadData(requestHandle, chunk.data(), available, &read) || read == 0) {
+        if (!WinHttpReadData(requestHandle, chunkBuf.data(), toRead, &read) || read == 0) {
             break;
         }
-        response.append(chunk.data(), read);
-    } while (available > 0);
+        response.append(chunkBuf.data(), read);
+    }
 
     WinHttpCloseHandle(requestHandle);
     WinHttpCloseHandle(connect);
@@ -509,18 +544,16 @@ bool GeminiProvider::ListModels(const std::wstring& endpoint, const std::wstring
                         WINHTTP_HEADER_NAME_BY_INDEX, &status, &statusSize, WINHTTP_NO_HEADER_INDEX);
 
     std::string response;
+    std::array<char, 8192> chunkBuf;
     DWORD available = 0;
-    do {
-        if (!WinHttpQueryDataAvailable(requestHandle, &available) || available == 0) {
-            break;
-        }
-        std::vector<char> chunk(available);
+    while (WinHttpQueryDataAvailable(requestHandle, &available) && available > 0) {
+        const DWORD toRead = std::min<DWORD>(available, static_cast<DWORD>(chunkBuf.size()));
         DWORD read = 0;
-        if (!WinHttpReadData(requestHandle, chunk.data(), available, &read) || read == 0) {
+        if (!WinHttpReadData(requestHandle, chunkBuf.data(), toRead, &read) || read == 0) {
             break;
         }
-        response.append(chunk.data(), read);
-    } while (available > 0);
+        response.append(chunkBuf.data(), read);
+    }
 
     WinHttpCloseHandle(requestHandle);
     WinHttpCloseHandle(connect);

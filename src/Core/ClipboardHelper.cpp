@@ -456,7 +456,8 @@ bool ClipboardHelper::ExecuteSafePasteAndRestore(HWND targetHwnd,
                                                 std::wstring_view transformedText,
                                                 std::wstring_view originalText,
                                                 DWORD origSequence,
-                                                std::chrono::milliseconds timeout) {
+                                                std::chrono::milliseconds timeout,
+                                                InputSender customSender) {
     const DWORD currentSeq = GetClipboardSequenceNumber();
     if (currentSeq != origSequence) {
         Logger::Instance().Warn(cat::Input,
@@ -476,7 +477,7 @@ bool ClipboardHelper::ExecuteSafePasteAndRestore(HWND targetHwnd,
             }
         }
 
-        if (!DispatchNormalizedPasteKeystroke()) {
+        if (!DispatchNormalizedPasteKeystroke(customSender)) {
             Logger::Instance().Error(cat::Input, L"Smart Paste: verbatim SendInput(Ctrl+V) failed (err {})", GetLastError());
             return false;
         }
@@ -504,7 +505,7 @@ bool ClipboardHelper::ExecuteSafePasteAndRestore(HWND targetHwnd,
     }
 
     // Step 3: Synthesize hardware Ctrl+V keystroke with normalized modifiers
-    if (!DispatchNormalizedPasteKeystroke()) {
+    if (!DispatchNormalizedPasteKeystroke(customSender)) {
         Logger::Instance().Error(cat::Input, L"Smart Paste: SendInput(Ctrl+V) failed (err {})", GetLastError());
         RestoreIfSequenceMatches(tempSequence, originalText, nullptr);
         return false;
@@ -513,8 +514,10 @@ bool ClipboardHelper::ExecuteSafePasteAndRestore(HWND targetHwnd,
     // Step 4: Adaptive synchronization wait.
     // Allow the target application message loop to receive WM_KEYDOWN/WM_PASTE and
     // fetch the clipboard data before we restore the original snapshot.
+    // An adaptive 250ms window gives heavy applications (Electron, Teams, Word) sufficient time
+    // to consume the paste keystroke, while honoring small timeouts in unit tests.
     const auto tStart = std::chrono::steady_clock::now();
-    const auto maxWait = std::min(timeout, std::chrono::milliseconds(50));
+    const auto maxWait = std::min(timeout, std::chrono::milliseconds(250));
     const auto tDeadline = tStart + maxWait;
 
     // Adaptive micro-polling yield loop to allow OS input queue dispatch while checking for clipboard sequence changes.

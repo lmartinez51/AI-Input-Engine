@@ -104,9 +104,9 @@ int64_t TranslationPipeline::Submit(TranslationRequest request, TranslationCallb
     }
 
     if (request.useCache && cache_) {
-        if (const std::wstring* cached = cache_->Lookup(request)) {
+        if (auto cached = cache_->Lookup(request)) {
             TranslationResult result;
-            result.text = *cached;
+            result.text = std::move(*cached);
             result.ok = true;
             result.requestId = id;
             result.fromCache = true;

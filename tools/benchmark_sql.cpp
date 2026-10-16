@@ -142,7 +142,7 @@ int main() {
     for (const auto& q : queries) {
         bool resOrig = IsSQLOriginal(q);
         if (IsSQLFastAscii(q) != resOrig || IsSQLUpperBuffer(q) != resOrig || IsSQLStdSearch(q) != resOrig) {
-            std::cerr << "Mismatch on query: " << std::string(q.begin(), q.end()) << std::endl;
+            std::wcerr << L"Mismatch on query: " << q << std::endl;
             return 1;
         }
     }

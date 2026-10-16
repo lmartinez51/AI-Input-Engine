@@ -26,17 +26,19 @@ HKL KeyTranslator::Layout() const {
     return layout_;
 }
 
-std::wstring KeyTranslator::Translate(DWORD vkCode, DWORD scanCode, bool extended) {
-    // Resolve the foreground window's keyboard layout (the layout the target
-    // application uses). Falls back to the current thread's layout.
-    const HWND fg = GetForegroundWindow();
-    DWORD threadId = 0;
-    if (fg) {
+void KeyTranslator::UpdateForeground(HWND fg, DWORD threadId) {
+    if (!threadId && fg) {
         threadId = GetWindowThreadProcessId(fg, nullptr);
     }
-    if (threadId != layoutThread_) {
+    if (threadId != layoutThread_ || !layout_) {
         layout_ = threadId ? GetKeyboardLayout(threadId) : GetKeyboardLayout(0);
         layoutThread_ = threadId;
+    }
+}
+
+std::wstring KeyTranslator::Translate(DWORD vkCode, DWORD scanCode, bool extended) {
+    if (!layout_) {
+        UpdateForeground(GetForegroundWindow());
     }
 
     wchar_t buf[8] = {};

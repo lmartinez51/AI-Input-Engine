@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <mutex>
 #include <thread>
@@ -48,6 +49,7 @@ private:
     void FireLocked();
 
     std::mutex mutex_;
+    std::condition_variable cv_;
     FiredCallback onFired_;
     std::chrono::milliseconds delay_{500};
     bool armed_ = false;

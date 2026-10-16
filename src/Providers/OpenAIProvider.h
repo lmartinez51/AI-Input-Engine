@@ -93,6 +93,9 @@ private:
     TranslationResult ExecuteOne(const TranslationRequest& req,
                                  const std::shared_ptr<std::atomic<bool>>& cancelled);
 
+    bool EnsureConnection(const std::wstring& host, int timeoutMs, std::wstring& outError);
+    void ResetConnection();
+
     OpenAIConfig config_;
 
     std::thread worker_;
@@ -100,6 +103,10 @@ private:
     std::condition_variable cv_;
     std::deque<Pending> queue_;
     std::atomic<bool> shutdown_{false};
+
+    void* session_{nullptr};
+    void* connect_{nullptr};
+    std::wstring connectedHost_;
 
     mutable std::mutex statusMutex_;
     std::atomic<ProviderStatus::State> state_{ProviderStatus::State::Ready};

@@ -13,6 +13,8 @@
 #include <string>
 #include <thread>
 
+struct IUIAutomation;
+
 namespace aiie {
 
 // Dedicated synthetic keyboard input signature applied to SendInput KEYBDINPUT.dwExtraInfo
@@ -74,6 +76,10 @@ public:
     // Timeout prevents deadlock if the commit thread hangs.
     void WaitForCommitComplete(std::chrono::milliseconds timeout = std::chrono::milliseconds(10000));
 
+    // Exposed for testing / diagnostics.
+    bool DeleteVerified(size_t count, const std::wstring& base);
+    std::optional<std::wstring> ReadFocusedText(IUIAutomation* existingUia = nullptr);
+
 private:
     static LRESULT CALLBACK HookProc(int code, WPARAM wp, LPARAM lp);
     static void WINAPI ForegroundChanged(HWINEVENTHOOK hook, DWORD event, HWND hwnd, LONG idObject,
@@ -81,11 +87,9 @@ private:
 
     LRESULT OnHookEvent(int code, WPARAM wp, LPARAM lp);
     void ThreadMain();
-    void InjectText(const std::wstring& text);
-    void InjectBackspaces(size_t count);
-    bool DeleteVerified(size_t count, const std::wstring& base);
+    void InjectText(const std::wstring& text, HWND targetHwnd = nullptr);
+    void InjectBackspaces(size_t count, HWND targetHwnd = nullptr);
     bool VerifyFinal(const std::wstring& base, const std::wstring& replacement);
-    std::optional<std::wstring> ReadFocusedText();
     static bool ModifiersMatch(Hotkey hk, const std::array<BYTE, 256>& state);
 
     std::atomic<bool> running_{false};
@@ -106,6 +110,8 @@ private:
     std::mutex commitMutex_;
     std::condition_variable commitCV_;
     bool commitPending_{false};
+    std::atomic<bool> commitAborted_{false};
+    std::thread commitThread_;
 
     // Configured hotkeys (compared against live modifier state).
     Hotkey toggle_;

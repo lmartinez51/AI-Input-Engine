@@ -106,7 +106,7 @@ std::wstring TrimWhitespaceAndQuotes(std::wstring text) {
 }
 
 // Performs a raw HTTPS POST request via WinHTTP and returns the response body and status code.
-bool PerformHttpRequest(const std::wstring& endpoint, const std::wstring& authBearerKey,
+bool PerformHttpRequest(HINTERNET persistentConnect, const std::wstring& endpoint, const std::wstring& authBearerKey,
                         const std::string& utf8Body, int timeoutMs,
                         const std::shared_ptr<std::atomic<bool>>& cancelled,
                         DWORD& outStatusCode,
@@ -123,29 +123,45 @@ bool PerformHttpRequest(const std::wstring& endpoint, const std::wstring& authBe
     const std::wstring host = HostFromUrl(endpoint);
     const std::wstring path = PathFromUrl(endpoint);
 
-    HINTERNET session = WinHttpOpen(L"AIInputEngine/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!session) {
-        outError = std::format(L"WinHttpOpen failed: {}", GetLastError());
-        return false;
-    }
+    HINTERNET session = nullptr;
+    HINTERNET connect = persistentConnect;
 
-    WinHttpSetTimeouts(session, timeoutMs / 4, timeoutMs / 2, timeoutMs, timeoutMs);
-
-    HINTERNET connect = WinHttpConnect(session, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
     if (!connect) {
-        outError = std::format(L"WinHttpConnect failed: {}", GetLastError());
-        WinHttpCloseHandle(session);
-        return false;
+        session = WinHttpOpen(L"AIInputEngine/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        if (!session) {
+            outError = std::format(L"WinHttpOpen failed: {}", GetLastError());
+            return false;
+        }
+
+        WinHttpSetTimeouts(session, timeoutMs / 4, timeoutMs / 2, timeoutMs, timeoutMs);
+
+        connect = WinHttpConnect(session, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
+        if (!connect) {
+            outError = std::format(L"WinHttpConnect failed: {}", GetLastError());
+            WinHttpCloseHandle(session);
+            return false;
+        }
     }
+
+    auto cleanup = [&](HINTERNET req) {
+        if (req) {
+            WinHttpCloseHandle(req);
+        }
+        if (session) {
+            if (connect && connect != persistentConnect) {
+                WinHttpCloseHandle(connect);
+            }
+            WinHttpCloseHandle(session);
+        }
+    };
 
     HINTERNET request = WinHttpOpenRequest(connect, L"POST", path.c_str(), nullptr,
                                           WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
                                           WINHTTP_FLAG_SECURE);
     if (!request) {
         outError = std::format(L"WinHttpOpenRequest failed: {}", GetLastError());
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
+        cleanup(nullptr);
         return false;
     }
 
@@ -161,24 +177,18 @@ bool PerformHttpRequest(const std::wstring& endpoint, const std::wstring& authBe
                                          static_cast<DWORD>(utf8Body.size()), 0);
     if (!sent) {
         outError = std::format(L"WinHttpSendRequest failed: {}", GetLastError());
-        WinHttpCloseHandle(request);
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
+        cleanup(request);
         return false;
     }
 
     if (!WinHttpReceiveResponse(request, nullptr)) {
         outError = std::format(L"WinHttpReceiveResponse failed: {}", GetLastError());
-        WinHttpCloseHandle(request);
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
+        cleanup(request);
         return false;
     }
 
     if (cancelled && cancelled->load()) {
-        WinHttpCloseHandle(request);
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
+        cleanup(request);
         outError = L"Request cancelled";
         return false;
     }
@@ -194,9 +204,7 @@ bool PerformHttpRequest(const std::wstring& endpoint, const std::wstring& authBe
     DWORD bytesAvailable = 0;
     while (WinHttpQueryDataAvailable(request, &bytesAvailable) && bytesAvailable > 0) {
         if (cancelled && cancelled->load()) {
-            WinHttpCloseHandle(request);
-            WinHttpCloseHandle(connect);
-            WinHttpCloseHandle(session);
+            cleanup(request);
             outError = L"Request cancelled";
             return false;
         }
@@ -212,16 +220,14 @@ bool PerformHttpRequest(const std::wstring& endpoint, const std::wstring& authBe
         }
     }
 
-    WinHttpCloseHandle(request);
-    WinHttpCloseHandle(connect);
-    WinHttpCloseHandle(session);
+    cleanup(request);
 
     outResponseBody = utf::FromUtf8(responseBytes);
     return true;
 }
 
 // Performs a streaming HTTPS POST request via WinHTTP and Server-Sent Events (SSE).
-bool PerformHttpStreamingRequest(const std::wstring& endpoint, const std::wstring& authBearerKey,
+bool PerformHttpStreamingRequest(HINTERNET persistentConnect, const std::wstring& endpoint, const std::wstring& authBearerKey,
                                  const std::string& utf8Body, int timeoutMs,
                                  const std::shared_ptr<std::atomic<bool>>& cancelled,
                                  RequestTelemetry& telemetry,
@@ -241,29 +247,45 @@ bool PerformHttpStreamingRequest(const std::wstring& endpoint, const std::wstrin
     const std::wstring host = HostFromUrl(endpoint);
     const std::wstring path = PathFromUrl(endpoint);
 
-    HINTERNET session = WinHttpOpen(L"AIInputEngine/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!session) {
-        outError = std::format(L"WinHttpOpen failed: {}", GetLastError());
-        return false;
-    }
+    HINTERNET session = nullptr;
+    HINTERNET connect = persistentConnect;
 
-    WinHttpSetTimeouts(session, timeoutMs / 4, timeoutMs / 2, timeoutMs, timeoutMs);
-
-    HINTERNET connect = WinHttpConnect(session, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
     if (!connect) {
-        outError = std::format(L"WinHttpConnect failed: {}", GetLastError());
-        WinHttpCloseHandle(session);
-        return false;
+        session = WinHttpOpen(L"AIInputEngine/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        if (!session) {
+            outError = std::format(L"WinHttpOpen failed: {}", GetLastError());
+            return false;
+        }
+
+        WinHttpSetTimeouts(session, timeoutMs / 4, timeoutMs / 2, timeoutMs, timeoutMs);
+
+        connect = WinHttpConnect(session, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
+        if (!connect) {
+            outError = std::format(L"WinHttpConnect failed: {}", GetLastError());
+            WinHttpCloseHandle(session);
+            return false;
+        }
     }
+
+    auto cleanup = [&](HINTERNET req) {
+        if (req) {
+            WinHttpCloseHandle(req);
+        }
+        if (session) {
+            if (connect && connect != persistentConnect) {
+                WinHttpCloseHandle(connect);
+            }
+            WinHttpCloseHandle(session);
+        }
+    };
 
     HINTERNET request = WinHttpOpenRequest(connect, L"POST", path.c_str(), nullptr,
                                           WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
                                           WINHTTP_FLAG_SECURE);
     if (!request) {
         outError = std::format(L"WinHttpOpenRequest failed: {}", GetLastError());
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
+        cleanup(nullptr);
         return false;
     }
 
@@ -280,17 +302,13 @@ bool PerformHttpStreamingRequest(const std::wstring& endpoint, const std::wstrin
                                          static_cast<DWORD>(utf8Body.size()), 0);
     if (!sent) {
         outError = std::format(L"WinHttpSendRequest failed: {}", GetLastError());
-        WinHttpCloseHandle(request);
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
+        cleanup(request);
         return false;
     }
 
     if (!WinHttpReceiveResponse(request, nullptr)) {
         outError = std::format(L"WinHttpReceiveResponse failed: {}", GetLastError());
-        WinHttpCloseHandle(request);
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
+        cleanup(request);
         return false;
     }
 
@@ -315,9 +333,7 @@ bool PerformHttpStreamingRequest(const std::wstring& endpoint, const std::wstrin
             responseBytes.resize(prev + bytesRead);
             if (bytesRead == 0) break;
         }
-        WinHttpCloseHandle(request);
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
+        cleanup(request);
         outResponseBody = utf::FromUtf8(responseBytes);
         return true;
     }
@@ -333,9 +349,7 @@ bool PerformHttpStreamingRequest(const std::wstring& endpoint, const std::wstrin
     while (true) {
         if (cancelled && cancelled->load()) {
             telemetry.cancelled = true;
-            WinHttpCloseHandle(request);
-            WinHttpCloseHandle(connect);
-            WinHttpCloseHandle(session);
+            cleanup(request);
             outError = L"Request cancelled";
             return false;
         }
@@ -361,9 +375,7 @@ bool PerformHttpStreamingRequest(const std::wstring& endpoint, const std::wstrin
             std::wstring sseErr;
             if (!OpenAIProvider::ProcessSseEvent(ev, accumulatedText, doneText, completed, sseErr)) {
                 outError = sseErr;
-                WinHttpCloseHandle(request);
-                WinHttpCloseHandle(connect);
-                WinHttpCloseHandle(session);
+                cleanup(request);
                 return false;
             }
 
@@ -383,9 +395,7 @@ bool PerformHttpStreamingRequest(const std::wstring& endpoint, const std::wstrin
     telemetry.completionTimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(tEnd - tReqStart).count();
     telemetry.completed = completed;
 
-    WinHttpCloseHandle(request);
-    WinHttpCloseHandle(connect);
-    WinHttpCloseHandle(session);
+    cleanup(request);
 
     if (cancelled && cancelled->load()) {
         telemetry.cancelled = true;
@@ -418,6 +428,45 @@ OpenAIProvider::~OpenAIProvider() {
     if (worker_.joinable()) {
         worker_.join();
     }
+    ResetConnection();
+}
+
+bool OpenAIProvider::EnsureConnection(const std::wstring& host, int timeoutMs, std::wstring& outError) {
+    outError.clear();
+    if (!session_) {
+        session_ = WinHttpOpen(L"AIInputEngine/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                               WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        if (!session_) {
+            outError = std::format(L"WinHttpOpen failed: {}", GetLastError());
+            return false;
+        }
+        WinHttpSetTimeouts(session_, timeoutMs / 4, timeoutMs / 2, timeoutMs, timeoutMs);
+    }
+    if (!connect_ || connectedHost_ != host) {
+        if (connect_) {
+            WinHttpCloseHandle(connect_);
+            connect_ = nullptr;
+        }
+        connect_ = WinHttpConnect(session_, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
+        if (!connect_) {
+            outError = std::format(L"WinHttpConnect failed: {}", GetLastError());
+            return false;
+        }
+        connectedHost_ = host;
+    }
+    return true;
+}
+
+void OpenAIProvider::ResetConnection() {
+    if (connect_) {
+        WinHttpCloseHandle(connect_);
+        connect_ = nullptr;
+    }
+    if (session_) {
+        WinHttpCloseHandle(session_);
+        session_ = nullptr;
+    }
+    connectedHost_.clear();
 }
 
 ProviderStatus OpenAIProvider::Status() const {
@@ -735,7 +784,7 @@ bool OpenAIProvider::TestConnection(const std::wstring& endpoint, const std::wst
     DWORD statusCode = 0;
     std::wstring responseBody;
     std::wstring httpError;
-    if (!PerformHttpRequest(endpoint, apiKey, utf8Body, timeoutMs, nullptr, statusCode, responseBody, httpError)) {
+    if (!PerformHttpRequest(nullptr, endpoint, apiKey, utf8Body, timeoutMs, nullptr, statusCode, responseBody, httpError)) {
         outError = httpError;
         return false;
     }
@@ -848,12 +897,31 @@ TranslationResult OpenAIProvider::ExecuteOne(const TranslationRequest& req,
         const auto tStart = std::chrono::steady_clock::now();
         bool httpOk = false;
 
+        const std::wstring host = HostFromUrl(config_.endpoint);
+        std::wstring connErr;
+        if (!EnsureConnection(host, config_.timeoutMs, connErr)) {
+            Logger::Instance().Warn(cat::Translation, L"OpenAI connect error (attempt {}/{}): {}",
+                                    attempts, maxAttempts, connErr);
+            if (attempts < maxAttempts) {
+                if (!InterruptibleSleep(500 * attempts, cancelled, shutdown_)) {
+                    res.ok = false;
+                    res.error = L"Request cancelled";
+                    return res;
+                }
+                continue;
+            }
+            res.ok = false;
+            res.error = L"Network error communicating with OpenAI";
+            res.errorDetail = connErr;
+            return res;
+        }
+
         if (useStreaming) {
-            httpOk = PerformHttpStreamingRequest(config_.endpoint, config_.apiKey, utf8Body,
+            httpOk = PerformHttpStreamingRequest(static_cast<HINTERNET>(connect_), config_.endpoint, config_.apiKey, utf8Body,
                                                  config_.timeoutMs, cancelled, telemetry,
                                                  statusCode, responseBody, httpError);
         } else {
-            httpOk = PerformHttpRequest(config_.endpoint, config_.apiKey, utf8Body,
+            httpOk = PerformHttpRequest(static_cast<HINTERNET>(connect_), config_.endpoint, config_.apiKey, utf8Body,
                                         config_.timeoutMs, cancelled, statusCode, responseBody, httpError);
             const auto tEnd = std::chrono::steady_clock::now();
             telemetry.completionTimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(tEnd - tStart).count();
@@ -867,6 +935,7 @@ TranslationResult OpenAIProvider::ExecuteOne(const TranslationRequest& req,
         }
 
         if (!httpOk) {
+            ResetConnection();
             if (httpError == L"Request cancelled") {
                 res.ok = false;
                 res.error = L"Request cancelled";

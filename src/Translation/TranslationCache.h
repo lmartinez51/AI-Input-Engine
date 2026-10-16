@@ -4,6 +4,7 @@
 
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -19,8 +20,8 @@ public:
     void Configure(bool enabled, size_t maxEntries);
     bool Enabled() const { return enabled_; }
 
-    // Returns nullptr on miss.
-    const std::wstring* Lookup(const TranslationRequest& request) const;
+    // Returns nullopt on miss.
+    std::optional<std::wstring> Lookup(const TranslationRequest& request) const;
     void Store(const TranslationRequest& request, std::wstring result);
 
     void Clear();

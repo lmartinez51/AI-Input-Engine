@@ -42,16 +42,16 @@ TranslationCache::Key TranslationCache::MakeKey(const TranslationRequest& reques
     return key;
 }
 
-const std::wstring* TranslationCache::Lookup(const TranslationRequest& request) const {
+std::optional<std::wstring> TranslationCache::Lookup(const TranslationRequest& request) const {
     std::lock_guard lock(mutex_);
     if (!enabled_) {
-        return nullptr;
+        return std::nullopt;
     }
     const Key key = MakeKey(request);
     const auto it = entries_.find(key);
     if (it == entries_.end()) {
         ++misses_;
-        return nullptr;
+        return std::nullopt;
     }
     ++hits_;
     // Move to back of recency order.
@@ -59,7 +59,7 @@ const std::wstring* TranslationCache::Lookup(const TranslationRequest& request) 
         order_.erase(oit);
         order_.push_back(key);
     }
-    return &it->second;
+    return it->second;
 }
 
 void TranslationCache::Store(const TranslationRequest& request, std::wstring result) {

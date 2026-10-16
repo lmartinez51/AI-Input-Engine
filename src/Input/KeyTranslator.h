@@ -24,6 +24,9 @@ public:
     // Current keyboard layout (of the foreground window if resolvable).
     HKL Layout() const;
 
+    // Updates cached layout for foreground window/thread.
+    void UpdateForeground(HWND fg, DWORD threadId = 0);
+
 private:
     std::array<BYTE, 256> state_{};
     HKL layout_ = nullptr;

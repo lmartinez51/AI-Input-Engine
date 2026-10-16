@@ -16,6 +16,10 @@ HookBackend::HookBackend() = default;
 
 HookBackend::~HookBackend() {
     Stop();
+    std::lock_guard lock(commitMutex_);
+    if (commitThread_.joinable() && commitThread_.get_id() != std::this_thread::get_id()) {
+        commitThread_.join();
+    }
 }
 
 void HookBackend::ApplyConfig(const AppConfig& config) {
@@ -39,6 +43,17 @@ void HookBackend::Stop() {
         return;
     }
     running_.store(false);
+    commitAborted_.store(true);
+    commitCV_.notify_all();
+
+    WaitForCommitComplete(std::chrono::milliseconds(3000));
+    {
+        std::lock_guard lock(commitMutex_);
+        if (commitThread_.joinable() && commitThread_.get_id() != std::this_thread::get_id()) {
+            commitThread_.join();
+        }
+    }
+
     if (hookThreadId_ != 0) {
         PostThreadMessageW(hookThreadId_, WM_QUIT, 0, 0);
     }
@@ -62,6 +77,7 @@ void HookBackend::ThreadMain() {
         return;
     }
     Logger::Instance().Info(cat::Input, L"low-level keyboard hook installed (thread {:#x})", hookThreadId_);
+    translator_.UpdateForeground(GetForegroundWindow());
 
     MSG msg;
     while (running_.load() && GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -84,15 +100,17 @@ void WINAPI HookBackend::ForegroundChanged(HWINEVENTHOOK hook, DWORD event, HWND
                                            LONG idChild, DWORD thread, DWORD time) {
     (void)hook;
     (void)event;
-    (void)hwnd;
     (void)idObject;
     (void)idChild;
-    (void)thread;
     (void)time;
     // Runs on the hook thread (WINEVENT_OUTOFCONTEXT). Target application changed;
-    // explicitly cancel active composition so old results never commit into the new target.
-    if (g_hookBackend && g_hookBackend->engine_) {
-        g_hookBackend->engine_->CancelActiveCompositionForFocusChange();
+    // signal any in-flight commit to abort immediately, update cached layout, and cancel active composition.
+    if (g_hookBackend) {
+        g_hookBackend->commitAborted_.store(true);
+        g_hookBackend->translator_.UpdateForeground(hwnd, thread);
+        if (g_hookBackend->engine_) {
+            g_hookBackend->engine_->CancelActiveCompositionForFocusChange();
+        }
     }
 }
 
@@ -127,6 +145,20 @@ LRESULT HookBackend::OnHookEvent(int code, WPARAM wp, LPARAM lp) {
         // them into the translator/engine, they only pass through.
         if (kbd->vkCode == 0) {
             return CallNextHookEx(nullptr, code, wp, lp);
+        }
+
+        // 3. Collision guard: Suppress physical typing/editing keystrokes while HookBackend
+        // is actively injecting backspaces or replacement text to prevent corrupted interleaving.
+        if (selfInjecting_.load()) {
+            const bool isModifier = (kbd->vkCode == VK_SHIFT || kbd->vkCode == VK_LSHIFT || kbd->vkCode == VK_RSHIFT ||
+                                     kbd->vkCode == VK_CONTROL || kbd->vkCode == VK_LCONTROL || kbd->vkCode == VK_RCONTROL ||
+                                     kbd->vkCode == VK_MENU || kbd->vkCode == VK_LMENU || kbd->vkCode == VK_RMENU ||
+                                     kbd->vkCode == VK_LWIN || kbd->vkCode == VK_RWIN || kbd->vkCode == VK_CAPITAL);
+            const bool isSystemKey = (kbd->vkCode == VK_ESCAPE || (kbd->flags & LLKHF_ALTDOWN) != 0);
+            if (!isModifier && !isSystemKey) {
+                // Drop typing keystroke to protect document integrity during active synthetic replacement
+                return 1;
+            }
         }
 
         // Update translator + local state only for events that will be
@@ -259,17 +291,21 @@ void HookBackend::CommitReplacement(std::wstring replacement, const std::wstring
     const size_t sourceLength = expectedSource.size();
     HWND fgHwnd = GetForegroundWindow();
     DWORD pid = 0;
-    GetWindowThreadProcessId(fgHwnd, &pid);
+    if (fgHwnd) {
+        GetWindowThreadProcessId(fgHwnd, &pid);
+    }
     std::wstring procName = L"unknown";
-    HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (hProc) {
-        wchar_t imgPath[MAX_PATH] = {};
-        DWORD imgLen = MAX_PATH;
-        if (QueryFullProcessImageNameW(hProc, 0, imgPath, &imgLen)) {
-            const wchar_t* lastSlash = wcsrchr(imgPath, L'\\');
-            procName = lastSlash ? (lastSlash + 1) : imgPath;
+    if (pid != 0) {
+        HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (hProc) {
+            wchar_t imgPath[MAX_PATH] = {};
+            DWORD imgLen = MAX_PATH;
+            if (QueryFullProcessImageNameW(hProc, 0, imgPath, &imgLen)) {
+                const wchar_t* lastSlash = wcsrchr(imgPath, L'\\');
+                procName = lastSlash ? (lastSlash + 1) : imgPath;
+            }
+            CloseHandle(hProc);
         }
-        CloseHandle(hProc);
     }
 
     Logger::Instance().Info(cat::Input,
@@ -277,10 +313,21 @@ void HookBackend::CommitReplacement(std::wstring replacement, const std::wstring
         reinterpret_cast<uintptr_t>(fgHwnd), pid, procName, sourceLength, replacement.size(), sourceLength, replacement.size());
 
     {
-        std::lock_guard lock(commitMutex_);
+        std::unique_lock lock(commitMutex_);
+        // Wait if a previous commit is still executing to prevent interleaved keystrokes
+        commitCV_.wait(lock, [this] { return !commitPending_ || !running_.load(); });
+        if (!running_.load()) {
+            Logger::Instance().Warn(cat::Input, L"[REPLACE] Backend not running, discarding commit");
+            return;
+        }
+        if (commitThread_.joinable() && commitThread_.get_id() != std::this_thread::get_id()) {
+            commitThread_.join();
+        }
         commitPending_ = true;
+        commitAborted_.store(false);
     }
-    std::thread([this, replacement = std::move(replacement), expectedSource, sourceLength, fgHwnd, procName]() {
+
+    commitThread_ = std::thread([this, replacement = std::move(replacement), expectedSource, sourceLength, fgHwnd, pid, procName]() {
         auto markDone = [this] {
             {
                 std::lock_guard lock(commitMutex_);
@@ -289,24 +336,59 @@ void HookBackend::CommitReplacement(std::wstring replacement, const std::wstring
             commitCV_.notify_all();
         };
 
+        // Validate foreground window before injecting to protect unrelated applications
+        if (fgHwnd && fgHwnd != GetDesktopWindow()) {
+            const HWND currentFg = GetForegroundWindow();
+            if (currentFg != fgHwnd) {
+                Logger::Instance().Warn(cat::Input,
+                    L"[REPLACE] Aborted: target window lost foreground before commit (orig={:#x}, current={:#x})",
+                    reinterpret_cast<uintptr_t>(fgHwnd), reinterpret_cast<uintptr_t>(currentFg));
+                markDone();
+                return;
+            }
+            DWORD currentPid = 0;
+            GetWindowThreadProcessId(currentFg, &currentPid);
+            if (pid != 0 && currentPid != pid) {
+                Logger::Instance().Warn(cat::Input,
+                    L"[REPLACE] Aborted: target process changed before commit (orig={}, current={})",
+                    pid, currentPid);
+                markDone();
+                return;
+            }
+        }
+
+        if (commitAborted_.load() || !running_.load()) {
+            Logger::Instance().Warn(cat::Input, L"[REPLACE] Aborted prior to injection");
+            markDone();
+            return;
+        }
+
         selfInjecting_.store(true);
         injectGuardUntilMs_.store(GetTickCount64() + 500);
 
         // Delete the source text via backspaces
-        InjectBackspaces(sourceLength);
+        InjectBackspaces(sourceLength, fgHwnd);
 
-        // Inject the translated text
-        InjectText(replacement);
-
-        Logger::Instance().Info(cat::Input, L"[REPLACE] result=SUCCESS target={:#x} process={}",
-                               reinterpret_cast<uintptr_t>(fgHwnd), procName);
+        // If focus was lost during backspaces or commit was aborted, do not inject translated text
+        if (!commitAborted_.load() && running_.load()) {
+            if (!fgHwnd || fgHwnd == GetDesktopWindow() || GetForegroundWindow() == fgHwnd) {
+                InjectText(replacement, fgHwnd);
+                Logger::Instance().Info(cat::Input, L"[REPLACE] result=SUCCESS target={:#x} process={}",
+                                       reinterpret_cast<uintptr_t>(fgHwnd), procName);
+            } else {
+                Logger::Instance().Warn(cat::Input,
+                    L"[REPLACE] Target window lost foreground during backspaces, aborting text injection");
+            }
+        } else {
+            Logger::Instance().Warn(cat::Input, L"[REPLACE] Commit aborted mid-replacement");
+        }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(30));
         // Extend guard grace period to 500ms after injection completes as secondary defense
         injectGuardUntilMs_.store(GetTickCount64() + 500);
         selfInjecting_.store(false);
         markDone();
-    }).detach();
+    });
 }
 
 void HookBackend::WaitForCommitComplete(std::chrono::milliseconds timeout) {
@@ -314,6 +396,9 @@ void HookBackend::WaitForCommitComplete(std::chrono::milliseconds timeout) {
     std::unique_lock lock(commitMutex_);
     // Wait for the commit thread to finish.
     commitCV_.wait_until(lock, deadline, [this] { return !commitPending_; });
+    if (commitThread_.joinable() && commitThread_.get_id() != std::this_thread::get_id()) {
+        commitThread_.join();
+    }
     // After the thread is done, selfInjecting_ is already false. Ensure the
     // inject guard has also expired (the thread's 30ms final sleep plus the
     // work before it always exceeds the 500ms guard in practice, but honor
@@ -331,6 +416,78 @@ void HookBackend::WaitForCommitComplete(std::chrono::milliseconds timeout) {
     }
 }
 
+namespace {
+
+class ScopedUiaSession {
+public:
+    ScopedUiaSession() {
+        const HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        comInited_ = SUCCEEDED(hr);
+        const bool alreadyInitedSta = (hr == RPC_E_CHANGED_MODE);
+        if (comInited_ || alreadyInitedSta) {
+            CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+                             IID_IUIAutomation, reinterpret_cast<void**>(&uia_));
+        }
+    }
+
+    ~ScopedUiaSession() {
+        if (uia_) {
+            uia_->Release();
+            uia_ = nullptr;
+        }
+        if (comInited_) {
+            CoUninitialize();
+            comInited_ = false;
+        }
+    }
+
+    ScopedUiaSession(const ScopedUiaSession&) = delete;
+    ScopedUiaSession& operator=(const ScopedUiaSession&) = delete;
+
+    IUIAutomation* Get() const { return uia_; }
+
+private:
+    bool comInited_ = false;
+    IUIAutomation* uia_ = nullptr;
+};
+
+std::optional<std::wstring> ExtractFocusedText(IUIAutomation* uia) {
+    if (!uia) {
+        return std::nullopt;
+    }
+    std::optional<std::wstring> result;
+    IUIAutomationElement* el = nullptr;
+    if (SUCCEEDED(uia->GetFocusedElement(&el)) && el) {
+        VARIANT v;
+        VariantInit(&v);
+        if (SUCCEEDED(el->GetCurrentPropertyValue(UIA_ValueValuePropertyId, &v)) && v.vt == VT_BSTR &&
+            v.bstrVal != nullptr) {
+            result = std::wstring(v.bstrVal);
+            SysFreeString(v.bstrVal);
+        } else {
+            VariantClear(&v);
+            IUIAutomationTextPattern* tp = nullptr;
+            if (SUCCEEDED(el->GetCurrentPattern(UIA_TextPatternId,
+                                                reinterpret_cast<IUnknown**>(&tp))) && tp) {
+                IUIAutomationTextRange* range = nullptr;
+                if (SUCCEEDED(tp->get_DocumentRange(&range)) && range) {
+                    BSTR b = nullptr;
+                    if (SUCCEEDED(range->GetText(-1, &b)) && b) {
+                        result = std::wstring(b);
+                        SysFreeString(b);
+                    }
+                    range->Release();
+                }
+                tp->Release();
+            }
+        }
+        el->Release();
+    }
+    return result;
+}
+
+} // namespace
+
 // Deletes `count` characters at the caret and verifies each step against the
 // live document, so a backspace dropped or coalesced by the target's text
 // pipeline is re-sent only while its target character is still visibly
@@ -340,6 +497,9 @@ bool HookBackend::DeleteVerified(size_t count, const std::wstring& base) {
     if (count == 0) {
         return true;
     }
+    ScopedUiaSession uiaSession;
+    IUIAutomation* uia = uiaSession.Get();
+
     const auto start = std::chrono::steady_clock::now();
     const auto deadline = start + std::chrono::milliseconds(5000);
     // Fast path: send the whole batch at once (same pacing as before). If
@@ -347,7 +507,7 @@ bool HookBackend::DeleteVerified(size_t count, const std::wstring& base) {
     InjectBackspaces(count);
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
     {
-        const auto seen = ReadFocusedText();
+        const auto seen = ReadFocusedText(uia);
         if (!seen.has_value()) {
             return true;
         }
@@ -373,7 +533,7 @@ bool HookBackend::DeleteVerified(size_t count, const std::wstring& base) {
     // to the TSF coalescing / dropping that affects batch injection.
     size_t remaining = count;
     while (std::chrono::steady_clock::now() < deadline) {
-        const auto seen = ReadFocusedText();
+        const auto seen = ReadFocusedText(uia);
         if (!seen.has_value()) {
             return true;
         }
@@ -395,7 +555,7 @@ bool HookBackend::DeleteVerified(size_t count, const std::wstring& base) {
              ++attempt) {
             InjectBackspaces(1);
             std::this_thread::sleep_for(std::chrono::milliseconds(150));
-            const auto re = ReadFocusedText();
+            const auto re = ReadFocusedText(uia);
             if (!re.has_value()) {
                 return true;
             }
@@ -427,10 +587,13 @@ bool HookBackend::DeleteVerified(size_t count, const std::wstring& base) {
 // after the source was deleted) is removed; any other mismatch is logged and
 // reported as a failure.
 bool HookBackend::VerifyFinal(const std::wstring& base, const std::wstring& replacement) {
+    ScopedUiaSession uiaSession;
+    IUIAutomation* uia = uiaSession.Get();
+
     const std::wstring expected = base + replacement;
     for (int attempt = 0; attempt < 3; ++attempt) {
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
-        const auto seen = ReadFocusedText();
+        const auto seen = ReadFocusedText(uia);
         if (!seen.has_value()) {
             return true;
         }
@@ -454,54 +617,22 @@ bool HookBackend::VerifyFinal(const std::wstring& base, const std::wstring& repl
     return false;
 }
 
-std::optional<std::wstring> HookBackend::ReadFocusedText() {
-    const HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    const bool comInited = SUCCEEDED(hr);
-    const bool alreadyInitedSta = (hr == RPC_E_CHANGED_MODE);
-    const bool canUseCom = comInited || alreadyInitedSta;
-
-    std::optional<std::wstring> result;
-    IUIAutomation* uia = nullptr;
-    if (canUseCom &&
-        SUCCEEDED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
-                                   IID_IUIAutomation, reinterpret_cast<void**>(&uia)))) {
-        IUIAutomationElement* el = nullptr;
-        if (SUCCEEDED(uia->GetFocusedElement(&el)) && el) {
-            VARIANT v;
-            VariantInit(&v);
-            if (SUCCEEDED(el->GetCurrentPropertyValue(UIA_ValueValuePropertyId, &v)) && v.vt == VT_BSTR &&
-                v.bstrVal != nullptr) {
-                result = std::wstring(v.bstrVal);
-                SysFreeString(v.bstrVal);
-            } else {
-                VariantClear(&v);
-                IUIAutomationTextPattern* tp = nullptr;
-                if (SUCCEEDED(el->GetCurrentPattern(UIA_TextPatternId,
-                                                    reinterpret_cast<IUnknown**>(&tp))) && tp) {
-                    IUIAutomationTextRange* range = nullptr;
-                    if (SUCCEEDED(tp->get_DocumentRange(&range)) && range) {
-                        BSTR b = nullptr;
-                        if (SUCCEEDED(range->GetText(-1, &b)) && b) {
-                            result = std::wstring(b);
-                            SysFreeString(b);
-                        }
-                        range->Release();
-                    }
-                    tp->Release();
-                }
-            }
-            el->Release();
-        }
-        uia->Release();
+std::optional<std::wstring> HookBackend::ReadFocusedText(IUIAutomation* existingUia) {
+    if (existingUia) {
+        return ExtractFocusedText(existingUia);
     }
-    if (comInited) {
-        CoUninitialize();
-    }
-    return result;
+    ScopedUiaSession session;
+    return ExtractFocusedText(session.Get());
 }
 
-void HookBackend::InjectBackspaces(size_t count) {
+void HookBackend::InjectBackspaces(size_t count, HWND targetHwnd) {
     for (size_t i = 0; i < count; ++i) {
+        if (commitAborted_.load() || !running_.load()) {
+            break;
+        }
+        if (targetHwnd && targetHwnd != GetDesktopWindow() && GetForegroundWindow() != targetHwnd) {
+            break;
+        }
         INPUT in{};
         in.type = INPUT_KEYBOARD;
         in.ki.wVk = VK_BACK;
@@ -515,7 +646,7 @@ void HookBackend::InjectBackspaces(size_t count) {
     }
 }
 
-void HookBackend::InjectText(const std::wstring& text) {
+void HookBackend::InjectText(const std::wstring& text, HWND targetHwnd) {
     // WinUI3 Notepad's TSF pipeline is hostile to synthetic keystrokes: batched
     // SendInput drops the shift modifier (letters come out lowercase), rapid
     // per-key SendInput drops whole characters, and KEYEVENTF_UNICODE is dropped
@@ -527,6 +658,12 @@ void HookBackend::InjectText(const std::wstring& text) {
     };
     const WORD shiftScan = static_cast<WORD>(MapVirtualKeyW(VK_LSHIFT, MAPVK_VK_TO_VSC));
     for (const wchar_t c : text) {
+        if (commitAborted_.load() || !running_.load()) {
+            break;
+        }
+        if (targetHwnd && targetHwnd != GetDesktopWindow() && GetForegroundWindow() != targetHwnd) {
+            break;
+        }
         // Prefer layout-mapped virtual keys: real keystrokes behave identically
         // to what the user typed (KEYEVENTF_UNICODE is dropped by WinUI3 apps).
         const SHORT vkScan = VkKeyScanW(c);

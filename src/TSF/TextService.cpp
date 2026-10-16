@@ -300,10 +300,14 @@ STDMETHODIMP TextService::OnPopContext(ITfContext*) {
 // ITfKeyEventSink
 // ---------------------------------------------------------------------------
 
-STDMETHODIMP TextService::OnSetFocus(BOOL) { return S_OK; }
+STDMETHODIMP TextService::OnSetFocus(BOOL) {
+    cachedKeyChar_.valid = false;
+    return S_OK;
+}
 
 STDMETHODIMP TextService::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
     *pfEaten = FALSE;
+    cachedKeyChar_.valid = false;
     if (pic == nullptr || pfEaten == nullptr || !enabled_ || !engine_) {
         return S_OK;
     }
@@ -312,7 +316,11 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM l
         // Handled keys when composing; ignored otherwise (decided in OnKeyDown).
         return S_OK;
     }
-    if (!CharForVk(wParam, lParam).empty()) {
+    cachedKeyChar_.wParam = wParam;
+    cachedKeyChar_.lParam = lParam;
+    cachedKeyChar_.chars = CharForVk(wParam, lParam);
+    cachedKeyChar_.valid = true;
+    if (!cachedKeyChar_.chars.empty()) {
         *pfEaten = TRUE;
     }
     return S_OK;
@@ -320,23 +328,27 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* pic, WPARAM wParam, LPARAM l
 
 STDMETHODIMP TextService::OnTestKeyUp(ITfContext*, WPARAM, LPARAM, BOOL* pfEaten) {
     *pfEaten = FALSE;
+    cachedKeyChar_.valid = false;
     return S_OK;
 }
 
 STDMETHODIMP TextService::OnKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
     *pfEaten = FALSE;
     if (pic == nullptr || !engine_) {
+        cachedKeyChar_.valid = false;
         return S_FALSE;
     }
     const DWORD vk = static_cast<DWORD>(wParam);
 
     if (!enabled_) {
         // Engine disabled: behave like a normal keyboard.
+        cachedKeyChar_.valid = false;
         return S_FALSE;
     }
 
     switch (vk) {
     case VK_RETURN:
+        cachedKeyChar_.valid = false;
         // Commit any live composition, then let the app handle Enter (so the
         // newline format is always correct for the target application).
         if (composition_) {
@@ -345,6 +357,7 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lPara
         }
         return S_OK;
     case VK_BACK:
+        cachedKeyChar_.valid = false;
         if (composition_) {
             engine_->HandleBackspace();
             *pfEaten = TRUE;
@@ -363,6 +376,7 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lPara
     case VK_NEXT:
     case VK_DELETE:
     case VK_INSERT:
+        cachedKeyChar_.valid = false;
         // Navigation: commit the composition untouched, let the app move.
         if (composition_) {
             engine_->HandleCommitKey();
@@ -373,7 +387,14 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lPara
         break;
     }
 
-    const std::wstring chars = CharForVk(wParam, lParam);
+    std::wstring chars;
+    if (cachedKeyChar_.valid && cachedKeyChar_.wParam == wParam && cachedKeyChar_.lParam == lParam) {
+        chars = std::move(cachedKeyChar_.chars);
+        cachedKeyChar_.valid = false;
+    } else {
+        chars = CharForVk(wParam, lParam);
+        cachedKeyChar_.valid = false;
+    }
     Logger::Instance().Debug(cat::TSF, L"key down vk={:#x} enabled={} chars={} eaten={}",
                              vk, enabled_ ? 1 : 0, chars.size(), *pfEaten ? 1 : 0);
     if (chars.empty()) {
@@ -392,6 +413,7 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* pic, WPARAM wParam, LPARAM lPara
 
 STDMETHODIMP TextService::OnKeyUp(ITfContext*, WPARAM, LPARAM, BOOL* pfEaten) {
     *pfEaten = FALSE;
+    cachedKeyChar_.valid = false;
     return S_OK;
 }
 

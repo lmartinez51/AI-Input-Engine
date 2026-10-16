@@ -132,6 +132,28 @@ inline int RunAll() {
         }                                                                             \
     } while (0)
 
+#define CHECK_LT(a, b)                                                                \
+    do {                                                                              \
+        ++::mt::Checks();                                                             \
+        const auto va = (a);                                                          \
+        const auto vb = (b);                                                          \
+        if (!(va < vb)) {                                                             \
+            ::mt::ReportFailure(__FILE__, __LINE__,                                   \
+                                std::string("CHECK_LT failed: " #a " < " #b));        \
+        }                                                                             \
+    } while (0)
+
+#define CHECK_GE(a, b)                                                                \
+    do {                                                                              \
+        ++::mt::Checks();                                                             \
+        const auto va = (a);                                                          \
+        const auto vb = (b);                                                          \
+        if (!(va >= vb)) {                                                            \
+            ::mt::ReportFailure(__FILE__, __LINE__,                                   \
+                                std::string("CHECK_GE failed: " #a " >= " #b));       \
+        }                                                                             \
+    } while (0)
+
 #define CHECK_STREQ(a, b)                                                             \
     do {                                                                              \
         ++::mt::Checks();                                                             \

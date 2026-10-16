@@ -64,6 +64,8 @@ flowchart TD
 - **Exact Cache Identity & Monotonic IDs**: Isolation key across `providerId | model | operation | sourceLanguage | targetLanguage | profile | customInstructions | text`. Monotonic request tracking guarantees obsolete responses are discarded.
 - **Smart Paste Heuristics & Key Recovery**: High-fidelity content analysis distinguishing code snippets and secrets from natural prose containing programming symbols (`==`, `!=`, `->`, `++`). Synthetic paste uses full modifier state recovery to prevent stuck Ctrl or Shift keys.
 - **Speculative Translation (PCHP)**: Pre-Commit Hesitation Prediction preemptively streams translations during natural typing pauses (canonical gates: $\ge 450\text{ ms}$ hesitation, $\ge 10\text{ chars}$ buffer, $\ge 8\text{ chars}$ growth, $\ge 750\text{ ms}$ cooldown), achieving near 0-ms commit latency while guaranteeing single physical concurrency and candidate ready suppression.
+- **Resilient Composition & Replacement**: Serialized commit thread lifecycle with clean shutdown joining; dual-layer target foreground verification protecting active applications during task switching; collision guards suppressing physical typing collisions during human-paced text injection; adaptive paste synchronization wait (up to 250ms) for heavy desktop applications (Electron, Teams, Word); single-session UI Automation caching.
+- **High-Throughput Streaming & Zero-Allocation Net I/O**: Robust SSE streaming parser handling fragmented network chunks without line drops; stack-allocated HTTP buffers eliminating per-chunk heap allocations; cancelable WinHTTP request pipes.
 
 ## Components
 
@@ -71,7 +73,7 @@ flowchart TD
 |---|---|
 | `AIInputEngine.exe` | System tray host, hook-based input engine, Smart Paste manager, modern settings & diagnostics UI |
 | `AIInputEngineTSF.dll` | Text Services Framework (TSF) text service (native IME path) |
-| `aiie_unit_tests.exe` | Comprehensive unit & simulation test suite (299 deterministic tests, 0 failures) |
+| `aiie_unit_tests.exe` | Comprehensive unit & simulation test suite (321 deterministic tests, 6,334 checks, 0 failures) |
 | `aiie_openaitest.exe` | Live OpenAI connectivity, translation, streaming, and rewrite validation tool |
 | `aiie_geminitest.exe` | Live Gemini diagnostic tool |
 | `aiie_tsfhost.exe` | TSF host proof tool verifying composition -> transformation -> commit |

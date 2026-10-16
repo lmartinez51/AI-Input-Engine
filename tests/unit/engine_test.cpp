@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <objbase.h>
 #include <thread>
 
 using namespace aiie;
@@ -1397,7 +1398,7 @@ TEST(hook_backend_read_focused_text_com_init_handling) {
     // Test 1: Uninitialized COM / Default state on worker thread
     std::thread([&] {
         // ReadFocusedText() handles COM initialization internally
-        auto res1 = backend.WaitForCommitComplete(); // dummy call to verify backend
+        auto res1 = backend.ReadFocusedText();
         (void)res1;
     }).join();
 
@@ -1408,8 +1409,8 @@ TEST(hook_backend_read_focused_text_com_init_handling) {
         const HRESULT hrSta = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         CHECK(SUCCEEDED(hrSta) || hrSta == S_FALSE);
 
-        // Call DeleteVerified or direct method if accessible, or test COM behavior
-        // DeleteVerified calls ReadFocusedText internally
+        auto res2 = backend.ReadFocusedText();
+        (void)res2;
         bool delRes = backend.DeleteVerified(0, L"");
         CHECK(delRes); // 0 count returns true immediately after calling ReadFocusedText check or early return
 
@@ -1424,6 +1425,8 @@ TEST(hook_backend_read_focused_text_com_init_handling) {
         const HRESULT hrMta = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         CHECK(SUCCEEDED(hrMta));
 
+        auto res3 = backend.ReadFocusedText();
+        (void)res3;
         bool delRes = backend.DeleteVerified(0, L"");
         CHECK(delRes);
 

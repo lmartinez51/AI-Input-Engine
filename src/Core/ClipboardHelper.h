@@ -82,7 +82,8 @@ public:
                                           std::wstring_view transformedText,
                                           std::wstring_view originalText,
                                           DWORD origSequence,
-                                          std::chrono::milliseconds timeout = std::chrono::milliseconds(1500));
+                                          std::chrono::milliseconds timeout = std::chrono::milliseconds(1500),
+                                          InputSender customSender = nullptr);
 };
 
 } // namespace aiie

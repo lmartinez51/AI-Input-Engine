@@ -108,6 +108,14 @@ private:
     bool enabled_ = true;
 
     std::wstring compositionText_; // current composition text (UTF-16)
+
+    struct CachedKeyChar {
+        WPARAM wParam = 0;
+        LPARAM lParam = 0;
+        std::wstring chars;
+        bool valid = false;
+    };
+    mutable CachedKeyChar cachedKeyChar_;
 };
 
 // Adapter from the engine to the TSF composition operations.

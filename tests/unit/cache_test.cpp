@@ -52,15 +52,15 @@ TEST(cache_isolation_matrix) {
     cache.Store(caseA, L"hello-A");
 
     // Must be a hit for exact Case A
-    const std::wstring* hitA = cache.Lookup(caseA);
-    CHECK(hitA != nullptr);
-    CHECK_STREQ(*hitA, L"hello-A");
+    const auto hitA = cache.Lookup(caseA);
+    CHECK(hitA.has_value());
+    CHECK_STREQ(hitA->c_str(), L"hello-A");
 
     // All others MUST be isolated cache misses!
-    CHECK(cache.Lookup(caseB) == nullptr);
-    CHECK(cache.Lookup(caseC) == nullptr);
-    CHECK(cache.Lookup(caseD) == nullptr);
-    CHECK(cache.Lookup(caseE) == nullptr);
+    CHECK(!cache.Lookup(caseB).has_value());
+    CHECK(!cache.Lookup(caseC).has_value());
+    CHECK(!cache.Lookup(caseD).has_value());
+    CHECK(!cache.Lookup(caseE).has_value());
 
     // Store Case B, Case C, Case D, Case E with distinct results:
     cache.Store(caseB, L"hello-B");
@@ -69,11 +69,11 @@ TEST(cache_isolation_matrix) {
     cache.Store(caseE, L"custom-E");
 
     // Verify all return their own unique results without cross-pollution:
-    CHECK_STREQ(*cache.Lookup(caseA), L"hello-A");
-    CHECK_STREQ(*cache.Lookup(caseB), L"hello-B");
-    CHECK_STREQ(*cache.Lookup(caseC), L"Hola-C");
-    CHECK_STREQ(*cache.Lookup(caseD), L"hey-D");
-    CHECK_STREQ(*cache.Lookup(caseE), L"custom-E");
+    CHECK_STREQ(cache.Lookup(caseA)->c_str(), L"hello-A");
+    CHECK_STREQ(cache.Lookup(caseB)->c_str(), L"hello-B");
+    CHECK_STREQ(cache.Lookup(caseC)->c_str(), L"Hola-C");
+    CHECK_STREQ(cache.Lookup(caseD)->c_str(), L"hey-D");
+    CHECK_STREQ(cache.Lookup(caseE)->c_str(), L"custom-E");
 }
 
 TEST(cache_evicts_oldest) {
@@ -84,9 +84,9 @@ TEST(cache_evicts_oldest) {
     cache.Store(a, L"1");
     cache.Store(b, L"2");
     cache.Store(c, L"3");
-    CHECK(cache.Lookup(a) == nullptr); // evicted (oldest)
-    CHECK(cache.Lookup(b) != nullptr);
-    CHECK(cache.Lookup(c) != nullptr);
+    CHECK(!cache.Lookup(a).has_value()); // evicted (oldest)
+    CHECK(cache.Lookup(b).has_value());
+    CHECK(cache.Lookup(c).has_value());
     CHECK_EQ(cache.Size(), 2u);
 }
 
@@ -94,7 +94,7 @@ TEST(cache_disabled) {
     TranslationCache cache(100);
     cache.Configure(false, 100);
     cache.Store(MakeRequest(L"hola"), L"hello");
-    CHECK(cache.Lookup(MakeRequest(L"hola")) == nullptr);
+    CHECK(!cache.Lookup(MakeRequest(L"hola")).has_value());
     CHECK_EQ(cache.Size(), 0u);
 }
 
@@ -103,7 +103,7 @@ TEST(cache_clear) {
     cache.Store(MakeRequest(L"hola"), L"hello");
     cache.Clear();
     CHECK_EQ(cache.Size(), 0u);
-    CHECK(cache.Lookup(MakeRequest(L"hola")) == nullptr);
+    CHECK(!cache.Lookup(MakeRequest(L"hola")).has_value());
 }
 
 TEST(cache_does_not_store_empty_text) {

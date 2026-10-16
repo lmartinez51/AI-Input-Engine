@@ -81,6 +81,13 @@ private:
     std::atomic<bool> running_{true};
     std::atomic<bool> shutdown_{false};
 
+    void* session_{nullptr};
+    void* connect_{nullptr};
+    std::wstring connectedHost_;
+
+    bool EnsureConnection(const std::wstring& host, int timeoutMs, std::wstring& outError);
+    void ResetConnection();
+
     std::atomic<ProviderStatus::State> state_{ProviderStatus::State::Ready};
     mutable std::mutex statusMutex_;
     std::wstring statusMessage_;

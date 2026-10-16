@@ -411,7 +411,7 @@ public:
             return true;
         }
         if (req && cache_) {
-            return cache_->Lookup(*req) != nullptr;
+            return cache_->Lookup(*req).has_value();
         }
         return false;
     }
@@ -422,7 +422,7 @@ public:
             return lastText_;
         }
         if (req && cache_) {
-            if (const std::wstring* cached = cache_->Lookup(*req)) {
+            if (auto cached = cache_->Lookup(*req)) {
                 return *cached;
             }
         }

@@ -5,14 +5,20 @@ namespace aiie {
 Debouncer::Debouncer(FiredCallback onFired) : onFired_(std::move(onFired)) {}
 
 void Debouncer::SetDelay(std::chrono::milliseconds delay) {
-    std::lock_guard lock(mutex_);
-    delay_ = delay;
+    {
+        std::lock_guard lock(mutex_);
+        delay_ = delay;
+    }
+    cv_.notify_one();
 }
 
 void Debouncer::Arm() {
-    std::lock_guard lock(mutex_);
-    armed_ = true;
-    armedAt_ = Now();
+    {
+        std::lock_guard lock(mutex_);
+        armed_ = true;
+        armedAt_ = Now();
+    }
+    cv_.notify_one();
 }
 
 bool Debouncer::FireNow() {
@@ -23,6 +29,7 @@ bool Debouncer::FireNow() {
         }
         armed_ = false;
     }
+    cv_.notify_one();
     if (onFired_) {
         onFired_();
     }
@@ -30,8 +37,11 @@ bool Debouncer::FireNow() {
 }
 
 void Debouncer::Disarm() {
-    std::lock_guard lock(mutex_);
-    armed_ = false;
+    {
+        std::lock_guard lock(mutex_);
+        armed_ = false;
+    }
+    cv_.notify_one();
 }
 
 bool Debouncer::Tick() {
@@ -58,13 +68,28 @@ void Debouncer::Start() {
         running_ = true;
     }
     thread_ = std::thread([this] {
-        for (;;) {
-            if (Tick()) {
+        std::unique_lock lock(mutex_);
+        while (running_) {
+            if (!armed_) {
+                cv_.wait(lock, [this] { return !running_ || armed_; });
                 continue;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            if (!running_.load()) {
-                break;
+
+            const auto target = armedAt_ + delay_;
+            const auto now = Now();
+            if (now >= target) {
+                armed_ = false;
+                lock.unlock();
+                if (onFired_) {
+                    onFired_();
+                }
+                lock.lock();
+            } else {
+                if (nowOverride_.load()) {
+                    cv_.wait_for(lock, std::chrono::milliseconds(10));
+                } else {
+                    cv_.wait_until(lock, target);
+                }
             }
         }
     });
@@ -78,6 +103,7 @@ void Debouncer::Stop() {
         }
         running_ = false;
     }
+    cv_.notify_all();
     if (thread_.joinable()) {
         if (thread_.get_id() == std::this_thread::get_id()) {
             thread_.detach();
