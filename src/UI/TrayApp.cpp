@@ -326,7 +326,10 @@ bool TrayApp::Init(HINSTANCE instance) {
     // Everything the engine touches must be created on this (UI) thread so
     // the message dispatcher's window lives here.
     dispatcher_ = std::make_shared<MessageDispatcher>();
-    cache_ = std::make_shared<TranslationCache>(static_cast<size_t>(config_.Get().cacheMaxEntries));
+    cache_ = std::make_shared<TranslationCache>(
+        static_cast<size_t>(config_.Get().cacheMaxEntries),
+        std::chrono::seconds(config_.Get().cacheTtlSeconds),
+        static_cast<size_t>(config_.Get().cacheMaxTextLength));
     backend_ = std::make_shared<HookBackend>();
     status_ = std::make_shared<StatusWindow>();
     backend_->SetStatusCallback([this](std::wstring_view msg, bool show) { SetStatus(msg, show); });
@@ -417,7 +420,10 @@ void TrayApp::ApplyConfig() {
 
     logger_->SetLevel(cfg.logLevel);
     logger_->SetLogRawText(cfg.logRawText);
-    cache_->Configure(cfg.cacheEnabled, static_cast<size_t>(cfg.cacheMaxEntries));
+    cache_->Configure(cfg.cacheEnabled,
+                      static_cast<size_t>(cfg.cacheMaxEntries),
+                      std::chrono::seconds(cfg.cacheTtlSeconds),
+                      static_cast<size_t>(cfg.cacheMaxTextLength));
 
     Logger::Instance().Info(cat::Config,
                             L"apply config: provider={} source={} target={} debounce={} minChars={} level={}",

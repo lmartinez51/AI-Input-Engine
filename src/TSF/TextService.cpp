@@ -109,8 +109,14 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* ptim, TfClientId tid, DWORD d
 
     // Wiring: dispatcher + pipeline + engine (owned per activation).
     dispatcher_ = std::make_shared<MessageDispatcher>();
-    auto cache = std::make_shared<TranslationCache>(static_cast<size_t>(config_.cacheMaxEntries));
-    cache->Configure(config_.cacheEnabled, static_cast<size_t>(config_.cacheMaxEntries));
+    auto cache = std::make_shared<TranslationCache>(
+        static_cast<size_t>(config_.cacheMaxEntries),
+        std::chrono::seconds(config_.cacheTtlSeconds),
+        static_cast<size_t>(config_.cacheMaxTextLength));
+    cache->Configure(config_.cacheEnabled,
+                     static_cast<size_t>(config_.cacheMaxEntries),
+                     std::chrono::seconds(config_.cacheTtlSeconds),
+                     static_cast<size_t>(config_.cacheMaxTextLength));
     auto provider = ProviderFactory::Create(config_);
     pipeline_ = std::make_shared<TranslationPipeline>(provider, cache, config_.requestTimeoutMs);
     statusWindow_ = std::make_unique<StatusWindow>();

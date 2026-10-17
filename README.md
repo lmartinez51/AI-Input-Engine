@@ -61,7 +61,7 @@ flowchart TD
 - **Language Registry**: First-class support for `zh-Hans` (Chinese Simplified), `zh-Hant` (Chinese Traditional), `en`, `es`, `fr`, `de`, `ja`, `pt`, `it`, and `auto` (for translation source).
 - **Security & Privacy**: API keys are securely stored in Windows Credential Manager (DPAPI); never logged or stored in plaintext.
 - **Safety & Anti-Conversational Guarantees**: Strict instruction guardrails ensure the AI only translates or rewrites and never answers questions or injects conversational filler. Preserves protected tokens (URLs, emails, mentions, hashtags, code).
-- **Exact Cache Identity & Monotonic IDs**: Isolation key across `providerId | model | operation | sourceLanguage | targetLanguage | profile | customInstructions | text`. Monotonic request tracking guarantees obsolete responses are discarded.
+- **Canonical O(1) LRU Cache with Lazy TTL & Payload Guards**: In-memory high-throughput translation cache backed by `std::list` pointer splicing and `std::unordered_map` indexing ($O(1)$ lookup, hit-recency refresh, and eviction). Features zero-overhead lazy TTL expiration (default 30 min, configurable) protecting sensitive text from prolonged RAM residency, bidirectional payload bounding (`maxTextLength` up to 4,000 chars) preventing memory bloat from massive Smart Paste documents, and strict isolation keys across provider, model, operation, languages, profile, custom instructions, and text.
 - **Smart Paste Heuristics & Key Recovery**: High-fidelity content analysis distinguishing code snippets and secrets from natural prose containing programming symbols (`==`, `!=`, `->`, `++`). Synthetic paste uses full modifier state recovery to prevent stuck Ctrl or Shift keys.
 - **Speculative Translation (PCHP)**: Pre-Commit Hesitation Prediction preemptively streams translations during natural typing pauses (canonical gates: $\ge 450\text{ ms}$ hesitation, $\ge 10\text{ chars}$ buffer, $\ge 8\text{ chars}$ growth, $\ge 750\text{ ms}$ cooldown), achieving near 0-ms commit latency while guaranteeing single physical concurrency and candidate ready suppression.
 - **Resilient Composition & Replacement**: Serialized commit thread lifecycle with clean shutdown joining; dual-layer target foreground verification protecting active applications during task switching; collision guards suppressing physical typing collisions during human-paced text injection; adaptive paste synchronization wait (up to 250ms) for heavy desktop applications (Electron, Teams, Word); single-session UI Automation caching.
@@ -73,7 +73,7 @@ flowchart TD
 |---|---|
 | `AIInputEngine.exe` | System tray host, hook-based input engine, Smart Paste manager, modern settings & diagnostics UI |
 | `AIInputEngineTSF.dll` | Text Services Framework (TSF) text service (native IME path) |
-| `aiie_unit_tests.exe` | Comprehensive unit & simulation test suite (321 deterministic tests, 6,334 checks, 0 failures) |
+| `aiie_unit_tests.exe` | Comprehensive unit & simulation test suite (333 deterministic tests, 6,408 checks, 0 failures) |
 | `aiie_openaitest.exe` | Live OpenAI connectivity, translation, streaming, and rewrite validation tool |
 | `aiie_geminitest.exe` | Live Gemini diagnostic tool |
 | `aiie_tsfhost.exe` | TSF host proof tool verifying composition -> transformation -> commit |

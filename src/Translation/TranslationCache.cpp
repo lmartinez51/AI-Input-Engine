@@ -1,21 +1,46 @@
 #include "Translation/TranslationCache.h"
 
-#include "Core/Utf.h"
-
 #include <algorithm>
 
 namespace aiie {
 
-TranslationCache::TranslationCache(size_t maxEntries) : maxEntries_(maxEntries) {}
+TranslationCache::TranslationCache(size_t maxEntries, std::chrono::seconds ttl, size_t maxTextLength)
+    : maxEntries_(maxEntries), ttl_(ttl), maxTextLength_(maxTextLength) {}
 
-void TranslationCache::Configure(bool enabled, size_t maxEntries) {
+void TranslationCache::Configure(bool enabled,
+                                size_t maxEntries,
+                                std::chrono::seconds ttl,
+                                size_t maxTextLength) {
     std::lock_guard lock(mutex_);
     enabled_ = enabled;
     maxEntries_ = maxEntries;
+    ttl_ = ttl;
+    maxTextLength_ = maxTextLength;
     if (maxEntries_ == 0) {
-        entries_.clear();
-        order_.clear();
+        items_.clear();
+        index_.clear();
+    } else {
+        // If maxTextLength was lowered, purge existing entries that exceed the new threshold.
+        if (maxTextLength_ > 0) {
+            for (auto it = items_.begin(); it != items_.end(); ) {
+                if (it->requestTextLength > maxTextLength_ || it->value.size() > maxTextLength_) {
+                    index_.erase(it->key);
+                    it = items_.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        EvictIfNeeded();
     }
+}
+
+bool TranslationCache::IsExpired(const Entry& entry) const {
+    if (ttl_.count() <= 0) {
+        return false;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    return (now - entry.createdAt) > ttl_;
 }
 
 TranslationCache::Key TranslationCache::MakeKey(const TranslationRequest& request) {
@@ -48,56 +73,89 @@ std::optional<std::wstring> TranslationCache::Lookup(const TranslationRequest& r
         return std::nullopt;
     }
     const Key key = MakeKey(request);
-    const auto it = entries_.find(key);
-    if (it == entries_.end()) {
+    const auto it = index_.find(key);
+    if (it == index_.end()) {
         ++misses_;
         return std::nullopt;
     }
-    ++hits_;
-    // Move to back of recency order.
-    if (const auto oit = std::find(order_.begin(), order_.end(), key); oit != order_.end()) {
-        order_.erase(oit);
-        order_.push_back(key);
+
+    // Lazy TTL check: if the entry has expired, purge it in O(1) and count as miss.
+    if (IsExpired(*(it->second))) {
+        items_.erase(it->second);
+        index_.erase(it);
+        ++misses_;
+        return std::nullopt;
     }
-    return it->second;
+
+    // If entry exceeds current payload length limit, purge in O(1) and count as miss.
+    if (maxTextLength_ > 0 && (it->second->requestTextLength > maxTextLength_ || it->second->value.size() > maxTextLength_)) {
+        items_.erase(it->second);
+        index_.erase(it);
+        ++misses_;
+        return std::nullopt;
+    }
+
+    ++hits_;
+    // O(1) recency update: splice the node to the front (MRU) without iterator invalidation or memory reallocation.
+    items_.splice(items_.begin(), items_, it->second);
+    return it->second->value;
 }
 
 void TranslationCache::Store(const TranslationRequest& request, std::wstring result) {
     std::lock_guard lock(mutex_);
-    if (!enabled_ || request.text.empty()) {
+    if (!enabled_ || maxEntries_ == 0 || request.text.empty()) {
         return;
     }
     const Key key = MakeKey(request);
-    if (entries_.count(key)) {
-        entries_[key] = std::move(result);
-        if (const auto oit = std::find(order_.begin(), order_.end(), key); oit != order_.end()) {
-            order_.erase(oit);
+    const auto it = index_.find(key);
+
+    // Memory footprint guard: do not cache huge payloads (request text or result text).
+    if (maxTextLength_ > 0 && (request.text.size() > maxTextLength_ || result.size() > maxTextLength_)) {
+        if (it != index_.end()) {
+            items_.erase(it->second);
+            index_.erase(it);
         }
-        order_.push_back(key);
         return;
     }
-    entries_[key] = std::move(result);
-    order_.push_back(key);
+
+    const auto now = std::chrono::steady_clock::now();
+    if (it != index_.end()) {
+        it->second->value = std::move(result);
+        it->second->createdAt = now;
+        it->second->requestTextLength = request.text.size();
+        items_.splice(items_.begin(), items_, it->second);
+        return;
+    }
+
+    // Insert new entry at the front (MRU).
+    items_.push_front(Entry{key, std::move(result), now, request.text.size()});
+    index_[items_.front().key] = items_.begin();
     EvictIfNeeded();
 }
 
 void TranslationCache::EvictIfNeeded() {
-    while (maxEntries_ > 0 && order_.size() > maxEntries_) {
-        const Key oldest = order_.front();
-        order_.erase(order_.begin());
-        entries_.erase(oldest);
+    // 1. Opportunistically purge expired entries from the back (LRU end).
+    while (!items_.empty() && IsExpired(items_.back())) {
+        index_.erase(items_.back().key);
+        items_.pop_back();
+    }
+
+    // 2. Evict least recently used entries from the back in O(1) time.
+    while (maxEntries_ > 0 && items_.size() > maxEntries_) {
+        index_.erase(items_.back().key);
+        items_.pop_back();
     }
 }
 
 void TranslationCache::Clear() {
     std::lock_guard lock(mutex_);
-    entries_.clear();
-    order_.clear();
+    items_.clear();
+    index_.clear();
 }
 
 size_t TranslationCache::Size() const {
     std::lock_guard lock(mutex_);
-    return entries_.size();
+    return items_.size();
 }
 
 size_t TranslationCache::Hits() const {
@@ -108,6 +166,16 @@ size_t TranslationCache::Hits() const {
 size_t TranslationCache::Misses() const {
     std::lock_guard lock(mutex_);
     return misses_;
+}
+
+std::chrono::seconds TranslationCache::TTL() const {
+    std::lock_guard lock(mutex_);
+    return ttl_;
+}
+
+size_t TranslationCache::MaxTextLength() const {
+    std::lock_guard lock(mutex_);
+    return maxTextLength_;
 }
 
 } // namespace aiie

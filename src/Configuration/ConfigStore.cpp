@@ -217,6 +217,8 @@ AppConfig ConfigStore::FromJson(const json::Value& root) {
 
     c.cacheEnabled = root.get_bool(L"cacheEnabled", c.cacheEnabled);
     c.cacheMaxEntries = static_cast<int>(root.get_int(L"cacheMaxEntries", c.cacheMaxEntries));
+    c.cacheTtlSeconds = static_cast<int>(root.get_int(L"cacheTtlSeconds", c.cacheTtlSeconds));
+    c.cacheMaxTextLength = static_cast<int>(root.get_int(L"cacheMaxTextLength", c.cacheMaxTextLength));
 
     c.speculativeTranslationEnabled = root.get_bool(L"speculativeTranslationEnabled", c.speculativeTranslationEnabled);
     c.speculativeDebounceMs = static_cast<int>(root.get_int(L"speculativeDebounceMs", c.speculativeDebounceMs));
@@ -233,6 +235,8 @@ AppConfig ConfigStore::FromJson(const json::Value& root) {
     c.requestTimeoutMs = clamp(c.requestTimeoutMs, def.requestTimeoutMs, 1000, 300000);
     c.maxRetries = clamp(c.maxRetries, def.maxRetries, 0, 10);
     c.cacheMaxEntries = clamp(c.cacheMaxEntries, def.cacheMaxEntries, 10, 10000);
+    c.cacheTtlSeconds = clamp(c.cacheTtlSeconds, def.cacheTtlSeconds, 0, 86400 * 7); // 0 to 7 days
+    c.cacheMaxTextLength = clamp(c.cacheMaxTextLength, def.cacheMaxTextLength, 100, 100000);
     c.speculativeDebounceMs = clamp(c.speculativeDebounceMs, def.speculativeDebounceMs, 20, 5000);
     c.speculativeMinChars = clamp(c.speculativeMinChars, def.speculativeMinChars, 1, 20);
     return c;
@@ -289,6 +293,8 @@ json::Value ConfigStore::ToJson(const AppConfig& c) {
     root.set(L"warnOnExternalSend", c.warnOnExternalSend);
     root.set(L"cacheEnabled", c.cacheEnabled);
     root.set(L"cacheMaxEntries", c.cacheMaxEntries);
+    root.set(L"cacheTtlSeconds", c.cacheTtlSeconds);
+    root.set(L"cacheMaxTextLength", c.cacheMaxTextLength);
     root.set(L"speculativeTranslationEnabled", c.speculativeTranslationEnabled);
     root.set(L"speculativeDebounceMs", c.speculativeDebounceMs);
     root.set(L"speculativeMinChars", c.speculativeMinChars);

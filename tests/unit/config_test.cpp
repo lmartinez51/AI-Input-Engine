@@ -31,6 +31,8 @@ TEST(config_defaults) {
     CHECK_EQ(c.provider, ProviderId::Mock);
     CHECK_EQ(c.debounceMs, 500);
     CHECK_EQ(c.hotkeyToggle.vk, VK_SPACE);
+    CHECK_EQ(c.cacheTtlSeconds, 1800);
+    CHECK_EQ(c.cacheMaxTextLength, 4000);
 }
 
 TEST(config_save_load_roundtrip) {
@@ -52,6 +54,8 @@ TEST(config_save_load_roundtrip) {
     c.logLevel = LogLevel::Debug;
     c.logRawText = true;
     c.cacheMaxEntries = 10;
+    c.cacheTtlSeconds = 3600;
+    c.cacheMaxTextLength = 8000;
     store.Set(c);
     CHECK(store.Save());
 
@@ -72,6 +76,8 @@ TEST(config_save_load_roundtrip) {
     CHECK_EQ(l.logLevel, LogLevel::Debug);
     CHECK(l.logRawText);
     CHECK_EQ(l.cacheMaxEntries, 10);
+    CHECK_EQ(l.cacheTtlSeconds, 3600);
+    CHECK_EQ(l.cacheMaxTextLength, 8000);
 
     std::filesystem::remove(path);
 }
@@ -511,4 +517,59 @@ TEST(config_string_display_mappers) {
     CHECK_STREQ(DefaultEndpointForProvider(ProviderId::Gemini), L"https://generativelanguage.googleapis.com/v1beta");
     CHECK_STREQ(DefaultEndpointForProvider(ProviderId::OpenAI), L"https://api.openai.com/v1/responses");
     CHECK_STREQ(DefaultEndpointForProvider(static_cast<ProviderId>(999)), L"");
+}
+
+TEST(config_cache_ttl_and_payload_settings) {
+    const std::filesystem::path path(TempConfigPath() + L".cache_ttl");
+    std::filesystem::remove(path);
+
+    // 1. Test round-trip with non-default values and cacheTtlSeconds = 0 (unlimited)
+    {
+        ConfigStore store(path);
+        AppConfig c;
+        c.cacheEnabled = true;
+        c.cacheMaxEntries = 500;
+        c.cacheTtlSeconds = 0; // Disabled / unlimited TTL
+        c.cacheMaxTextLength = 12000;
+        store.Set(c);
+        CHECK(store.Save());
+
+        ConfigStore loaded(path);
+        CHECK(loaded.Load());
+        CHECK(loaded.Get().cacheEnabled);
+        CHECK_EQ(loaded.Get().cacheMaxEntries, 500);
+        CHECK_EQ(loaded.Get().cacheTtlSeconds, 0);
+        CHECK_EQ(loaded.Get().cacheMaxTextLength, 12000);
+    }
+
+    // 2. Test clamping of out-of-range values
+    {
+        ConfigStore store(path);
+        AppConfig c;
+        c.cacheTtlSeconds = -100; // Negative TTL is out of range [0, 86400 * 7]
+        c.cacheMaxTextLength = 20; // < 100 is out of range [100, 100000]
+        store.Set(c);
+        CHECK(store.Save());
+
+        ConfigStore loaded(path);
+        CHECK(loaded.Load());
+        // Must clamp back to defaults
+        CHECK_EQ(loaded.Get().cacheTtlSeconds, 1800);
+        CHECK_EQ(loaded.Get().cacheMaxTextLength, 4000);
+    }
+
+    // 3. Test backward compatibility: absent fields in JSON fall back to defaults
+    {
+        std::ofstream out(path);
+        out << R"({"enabled": true, "cacheMaxEntries": 300})";
+        out.close();
+
+        ConfigStore loaded(path);
+        CHECK(loaded.Load());
+        CHECK_EQ(loaded.Get().cacheMaxEntries, 300);
+        CHECK_EQ(loaded.Get().cacheTtlSeconds, 1800);
+        CHECK_EQ(loaded.Get().cacheMaxTextLength, 4000);
+    }
+
+    std::filesystem::remove(path);
 }

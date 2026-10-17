@@ -114,6 +114,8 @@ struct AppConfig {
     // Cache.
     bool cacheEnabled = true;
     int cacheMaxEntries = 200;
+    int cacheTtlSeconds = 1800; // 30 minutes default; 0 disables TTL
+    int cacheMaxTextLength = 4000; // Maximum text length to cache; prevents memory bloat from massive paste payloads
 
     // Speculative / Predictive Translation settings (experimental PoC, disabled by default).
     bool speculativeTranslationEnabled = false;
